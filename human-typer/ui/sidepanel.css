@@ -827,10 +827,24 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
   height: 8px;
   border-radius: 50%;
   background: var(--ink-3);
+  position: relative;
   transform: translateY(-1px);
   transition: background-color var(--t) ease, box-shadow var(--t) ease;
 }
 .status[data-status="running"] .status__dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+/* While typing, the dot gives off a slow ripple. */
+.status[data-status="running"] .status__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ripple 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes ripple {
+  from { transform: scale(1); opacity: 0.5; }
+  70%, to { transform: scale(3.2); opacity: 0; }
+}
 .status[data-status="done"] .status__dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .status[data-status="error"] .status__dot { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 20%, transparent); }
 .status[data-status="waiting"] .status__dot { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
@@ -850,6 +864,56 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
   color: var(--ink-3);
   font-size: var(--fs-sm);
 }
+
+/* Typing strip: an abstract line of text, written at a fixed type point like
+   paper moving through a typewriter. Words are bars that grow a keystroke at a
+   time (sidepanel.js sets --n, the characters typed so far); older words drift
+   left and fade out under the mask. */
+.scribe {
+  display: flex;
+  align-items: center;
+  height: 2.77rem;
+  margin-top: var(--s3);
+  padding: 0 14px 0 0;
+  border-radius: var(--radius);
+  background: var(--well);
+  overflow: hidden;
+}
+.scribe__line {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 4px, #000 38%);
+  mask-image: linear-gradient(to right, transparent 4px, #000 38%);
+}
+.scribe__word {
+  flex: none;
+  width: calc(var(--n, 0) * 5px);
+  height: 6px;
+  border-radius: 3px;
+  background: var(--ink-3);
+  opacity: 0.45;
+  transition: width 70ms ease-out, opacity var(--t-slow) ease, background-color var(--t-slow) ease;
+}
+/* The word under the caret is fresh ink; it settles once the next one starts. */
+.scribe__word:last-child { background: var(--ink); opacity: 0.9; transition-duration: 70ms, 0s, 0s; }
+.scribe__caret {
+  flex: none;
+  width: 2px;
+  height: 1.3rem;
+  margin-left: 3px;
+  border-radius: 1px;
+  background: var(--ink-3);
+  transition: background-color var(--t) ease;
+}
+/* Solid while keys are landing, blinking while the typist thinks. */
+.scribe.is-live .scribe__caret { background: var(--accent); }
+.scribe.is-live.is-idle .scribe__caret { animation: caret 1.06s steps(1, end) infinite; }
 
 .meter { margin-top: var(--s4); }
 .meter__figs {
@@ -1034,6 +1098,8 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
   .tl-enter .tl__bar { animation: fade-in 160ms ease both; animation-delay: 0s; }
   .is-typing .brand__caret, .drop.is-busy .drop__icon { animation: none; }
   .is-typing .tl__bar--current::after { content: none; }
+  .status[data-status="running"] .status__dot::after { content: none; }
+  .scribe { display: none; }
   .btn:active:not([disabled]), .chip:active, .drop:active, .drop.is-over, .drop.is-over .drop__icon, .seg__label:active, .lang__btn:active { transform: none; }
   .btn:active:not([disabled]), .chip:active, .seg__label:active, .lang__btn:active, .drop:active { opacity: 0.7; }
   .seg::before, .lang::before, .bar__fill, .fill__problems summary::before { transition-duration: 0s; }
@@ -1063,6 +1129,8 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
   .input, .select, .textarea, .btn, .chip, .drop { border: 1px solid ButtonText; }
   .tl__bar { background: CanvasText; forced-color-adjust: none; }
   .tl__bar--upcoming { background: GrayText; }
+  .scribe { border: 1px solid CanvasText; }
+  .scribe__word, .scribe__caret { background: CanvasText; forced-color-adjust: none; }
   .bar__fill { background: Highlight; forced-color-adjust: none; }
   .target.is-on .target__dot { background: Highlight; }
   .seg__input:checked + .seg__label, .chip[aria-pressed="true"], .lang__btn[aria-pressed="true"] {

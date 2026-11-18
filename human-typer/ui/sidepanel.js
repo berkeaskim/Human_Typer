@@ -914,6 +914,100 @@
     }
   }
 
+  // ───────────────────────── Typing strip ─────────────────────────
+  // Decorative. The worker reports progress every few seconds, far too coarse
+  // to mirror real keystrokes, so while the job is running the strip plays a
+  // rhythm of its own: a burst inside each word, a beat on the space, a longer
+  // think at the end of a sentence, and the odd slip that gets backspaced.
+  // Timings here are assumed (tuned by eye) and unrelated to the planner's model.
+
+  var SCRIBE_MAX_WORDS = 36;
+  var scribe = { on: false, timer: null, word: null, len: 0, n: 0, undo: 0, slipAt: -1, noticeAt: -1, sentence: 8 };
+  var reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+  function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+  function scribeLength() { return 2 + Math.floor(Math.pow(Math.random(), 1.6) * 9); } // 2–10, mostly short
+
+  function scribeNewWord() {
+    var line = $('scribeLine');
+    var s = scribe;
+    s.word = line.appendChild(el('span', { class: 'scribe__word' }));
+    s.len = scribeLength();
+    s.n = 0;
+    s.undo = 0;
+    s.slipAt = s.len >= 4 && Math.random() < 0.12 ? 2 + Math.floor(Math.random() * (s.len - 2)) : -1;
+    s.noticeAt = s.slipAt < 0 ? -1 : Math.min(s.len, s.slipAt + (Math.random() < 0.5 ? 1 : 0));
+    while (line.children.length > SCRIBE_MAX_WORDS) line.removeChild(line.firstChild);
+  }
+
+  // Opening the panel on a job already under way should not look like page one.
+  function scribeSeed() {
+    var line = $('scribeLine');
+    for (var i = 0; i < SCRIBE_MAX_WORDS - 6; i++) {
+      line.appendChild(el('span', { class: 'scribe__word' })).style.setProperty('--n', String(scribeLength()));
+    }
+  }
+
+  function scribeStep() {
+    var s = scribe;
+    s.timer = null;
+    if (!s.on) return;
+    var delay;
+    if (!s.word) {
+      scribeNewWord();
+      delay = rnd(140, 300);
+    } else if (s.undo > 0) {                    // backspacing a slip
+      s.n--;
+      s.undo--;
+      delay = s.undo ? rnd(70, 120) : rnd(180, 320);
+    } else if (s.n < s.len) {                   // a key inside the word
+      s.n++;
+      delay = rnd(55, 150);
+      if (Math.random() < 0.08) delay += rnd(120, 260);
+      if (s.n === s.noticeAt) {                 // spotted the slip: stop, then go back
+        s.undo = s.noticeAt - s.slipAt + 1;
+        s.noticeAt = -1;
+        delay = rnd(280, 480);
+      }
+    } else {                                    // space, on to the next word
+      scribeNewWord();
+      s.sentence--;
+      if (s.sentence <= 0) {
+        s.sentence = 5 + Math.floor(Math.random() * 10);
+        delay = rnd(750, 1600);
+      } else {
+        delay = rnd(140, 300);
+      }
+    }
+    s.word.style.setProperty('--n', String(s.n));
+    $('scribe').classList.toggle('is-idle', delay > 600);
+    s.timer = setTimeout(scribeStep, delay);
+  }
+
+  function scribeSync() {
+    var job = remote.job;
+    var box = $('scribe');
+    var show = !!(job && ACTIVE[job.status]);
+    var live = show && job.status === 'running' && !document.hidden && !(reduceMotion && reduceMotion.matches);
+    if (show && box.hidden) {
+      var p = job.progress || {};
+      if (p.charsDone > 0 || p.blocksDone > 0) scribeSeed();
+    }
+    if (!show && !box.hidden) {
+      clear($('scribeLine'));
+      scribe.word = null;
+    }
+    box.hidden = !show;
+    box.classList.toggle('is-live', live);
+    if (live === scribe.on) return;
+    scribe.on = live;
+    clearTimeout(scribe.timer);
+    scribe.timer = null;
+    if (live) scribe.timer = setTimeout(scribeStep, 320);
+    else box.classList.remove('is-idle');
+  }
+
   function renderFooter() {
     $('selftestBtn').setAttribute('aria-expanded', String(ui.selftestOpen));
     setOpen('selftestBox', ui.selftestOpen);
@@ -948,6 +1042,7 @@
       renderSchedule();
       renderAction();
     }
+    scribeSync();
     renderFooter();
   }
 
@@ -1218,6 +1313,10 @@
 
     bridge.onMessage(onBridgeMessage);
     bridge.start();
+
+    // The typing strip rests while the panel is out of sight or motion is reduced.
+    document.addEventListener('visibilitychange', scribeSync);
+    if (reduceMotion && reduceMotion.addEventListener) reduceMotion.addEventListener('change', scribeSync);
 
     // Keep "elapsed" moving while a job is active.
     setInterval(function () {
