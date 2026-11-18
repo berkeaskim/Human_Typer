@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="128" height="128" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Source artwork for icon16/32/48/128.png (the PNGs use heavier strokes at 16 and 32 px). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a55d6"/>
+      <stop offset="1" stop-color="#2f38a8"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="23" height="23" rx="5.4" fill="url(#bg)"/>
+  <path d="M4.2 14.6c1.5-4 3.4-4 4.9-.6s3.4 3.4 4.9-.6" stroke="#ffffff" stroke-width="2.15"/>
+  <path d="M18.4 6.4v11.2" stroke="#c9ceff" stroke-width="2.15"/>
+</svg>

@@ -1,229 +1,181 @@
-// İçerik betiği: sayfa içi kontrol paneli, yazma döngüsü ve kendi kendini
-// sınayan ölçüm testi. Planı planner.js üretir, tuşları transport.js gönderir.
+// Content script: the executor. It pulls planned actions from the service
+// worker one block at a time and performs them through transport.js. All
+// planning, scheduling and persistence live in the worker; this file keeps no
+// state that matters across a page reload.
 (function () {
   'use strict';
-  if (window.top !== window || document.getElementById('human-typer-host')) return;
+  if (window.top !== window || window.__humanTyperLoaded) return;
+  window.__humanTyperLoaded = true;
 
-  const Planner = globalThis.HumanTyperPlanner;
   const T = globalThis.HumanTyperTransport;
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const run = { jobId: null, gen: 0, paused: false, fresh: true };
 
-  // --- küçük DOM yardımcısı (innerHTML kullanmadan) -------------------------
-  function h(tag, props, ...kids) {
-    const el = document.createElement(tag);
-    for (const [k, v] of Object.entries(props || {})) {
-      if (k === 'style') el.style.cssText = v;
-      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-      else el[k] = v;
-    }
-    for (const kid of kids) el.append(kid);
-    return el;
-  }
-
-  // --- panel ----------------------------------------------------------------
-  const host = h('div', { id: 'human-typer-host', style: 'position:fixed;right:16px;bottom:16px;z-index:2147483647;' });
-  const shadow = host.attachShadow({ mode: 'open' });
-  shadow.append(
-    h('style', {
-      textContent: `
-        .box{width:300px;font:13px/1.4 system-ui,sans-serif;color:#1f1f1f;background:#fff;
-          border:1px solid #c7c7c7;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.18);padding:10px}
-        .head{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:6px}
-        textarea{width:100%;height:110px;box-sizing:border-box;resize:vertical;font:inherit;padding:6px;
-          border:1px solid #c7c7c7;border-radius:6px}
-        label{display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px}
-        input,select{font:inherit;width:90px;padding:2px 4px}
-        .row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-        button{font:inherit;padding:4px 10px;border:1px solid #c7c7c7;border-radius:6px;background:#f3f3f3;cursor:pointer}
-        button.primary{background:#1a73e8;border-color:#1a73e8;color:#fff}
-        button:disabled{opacity:.5;cursor:default}
-        .status{margin-top:8px;white-space:pre-wrap;font-size:12px;color:#444;max-height:180px;overflow:auto}
-        .min .body{display:none}
-      `,
-    })
-  );
-
-  const ui = {};
-  ui.text = h('textarea', { placeholder: 'Yazılacak metni buraya yapıştır. Sonra imleci belgede yazının başlayacağı yere koy.' });
-  ui.wpm = h('input', { type: 'number', min: 10, max: 200, value: 52 });
-  ui.typo = h('input', { type: 'number', min: 0, max: 15, step: 0.5, value: 2 });
-  ui.layout = h('select', {}, h('option', { value: 'trq', textContent: 'Türkçe Q' }), h('option', { value: 'qwerty', textContent: 'QWERTY (EN)' }));
-  ui.start = h('button', { className: 'primary', textContent: 'Başlat', onclick: start });
-  ui.pause = h('button', { textContent: 'Duraklat', disabled: true, onclick: togglePause });
-  ui.stop = h('button', { textContent: 'Durdur', disabled: true, onclick: () => stop('Durduruldu.') });
-  ui.test = h('button', { textContent: 'Ölçüm testi', onclick: selfTest });
-  ui.status = h('div', { className: 'status', textContent: 'Hazır.' });
-  const box = h(
-    'div',
-    { className: 'box' },
-    h('div', { className: 'head' }, 'Human Typer 0.2', h('button', { textContent: '–', onclick: () => box.classList.toggle('min') })),
-    h(
-      'div',
-      { className: 'body' },
-      ui.text,
-      h('label', {}, 'Hız (kelime/dk)', ui.wpm),
-      h('label', {}, 'Hata oranı (%)', ui.typo),
-      h('label', {}, 'Klavye', ui.layout),
-      h('div', { className: 'row' }, ui.start, ui.pause, ui.stop, ui.test),
-      ui.status
-    )
-  );
-  shadow.append(box);
-  // Paneldeki tuşlar Docs'un kısayollarına gitmesin.
-  for (const type of ['keydown', 'keypress', 'keyup']) host.addEventListener(type, (e) => e.stopPropagation());
-  document.documentElement.append(host);
-
-  const say = (msg) => (ui.status.textContent = msg);
-  const fmt = (ms) => {
-    const s = Math.round(ms / 1000);
-    return s >= 60 ? `${Math.floor(s / 60)} dk ${s % 60} sn` : `${s} sn`;
-  };
-
-  // --- yazma döngüsü --------------------------------------------------------
-  const job = { status: 'idle', actions: [], idx: 0, token: 0, left: 0 };
-
-  function setButtons() {
-    const active = job.status === 'running' || job.status === 'paused';
-    ui.start.disabled = active;
-    ui.test.disabled = active;
-    ui.pause.disabled = !active;
-    ui.stop.disabled = !active;
-    ui.pause.textContent = job.status === 'paused' ? 'Sürdür' : 'Duraklat';
-  }
-
-  function start() {
-    const text = ui.text.value;
-    if (!text) return say('Önce metin gir.');
-    if (!T.ready()) return say('Docs giriş çerçevesi bulunamadı. Sayfa tam yüklendi mi?');
-    job.actions = Planner.plan(text, {
-      wpm: Number(ui.wpm.value) || 52,
-      typoRate: (Number(ui.typo.value) || 0) / 100,
-      layout: ui.layout.value,
-      seed: (Date.now() ^ (Math.random() * 2 ** 32)) >>> 0,
+  function send(msg) {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage(msg, (reply) => {
+          void chrome.runtime.lastError;
+          res(reply || null);
+        });
+      } catch (e) {
+        res(null); // extension reloaded: this page keeps an orphaned script
+      }
     });
-    const sum = Planner.summarize(job.actions);
-    job.idx = 0;
-    job.left = sum.ms;
-    job.status = 'running';
-    setButtons();
-    T.focus();
-    run(++job.token);
   }
 
-  async function run(token) {
-    while (job.idx < job.actions.length) {
-      if (job.token !== token) return;
-      if (job.status === 'paused') {
+  // --- on-page indicator ----------------------------------------------------
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;display:none;';
+  const pill = document.createElement('div');
+  pill.style.cssText =
+    'font:12px/1.3 system-ui,sans-serif;color:#fff;background:rgba(32,33,36,.88);padding:6px 10px;border-radius:999px;' +
+    'box-shadow:0 2px 8px rgba(0,0,0,.25);user-select:none;';
+  host.attachShadow({ mode: 'open' }).append(pill);
+  document.documentElement.append(host);
+  function indicate(text) {
+    host.style.display = text ? 'block' : 'none';
+    pill.textContent = text || '';
+  }
+
+  // --- executor loop --------------------------------------------------------
+  // Waits `ms` in small slices so pause and stop take effect quickly.
+  async function wait(ms, gen) {
+    let left = ms;
+    while (left > 0 && run.gen === gen) {
+      if (run.paused) {
         await sleep(200);
         continue;
       }
-      const a = job.actions[job.idx];
-      await sleep(a.delay);
-      if (job.token !== token) return;
-      if (job.status === 'paused') continue;
-      const ok = a.type === 'char' ? T.typeChar(a.ch) : T.backspace();
-      if (!ok) return stop('Docs giriş çerçevesi kayboldu; durduruldu.');
-      job.idx++;
-      job.left -= a.delay;
-      if (job.idx % 5 === 0) say(`Yazılıyor: ${job.idx}/${job.actions.length} tuş, kalan yaklaşık ${fmt(job.left)}`);
+      const slice = Math.min(left, 250);
+      await sleep(slice);
+      left -= slice;
     }
-    stop('Bitti.');
+    while (run.paused && run.gen === gen) await sleep(200);
+    return run.gen === gen;
   }
 
-  function togglePause(reason) {
-    if (job.status === 'running') {
-      job.status = 'paused';
-      say(typeof reason === 'string' ? reason : `Duraklatıldı (${job.idx}/${job.actions.length}).`);
-    } else if (job.status === 'paused') {
-      job.status = 'running';
+  async function loop(jobId) {
+    const gen = ++run.gen;
+    run.jobId = jobId;
+    run.paused = document.hidden;
+    indicate('Human Typer · typing');
+    let finished = null;
+    let misses = 0;
+    while (run.gen === gen) {
+      const reply = await send({ type: 'ht-next', jobId, finished, fresh: run.fresh });
+      if (!reply) {
+        // The worker may be restarting; retry for a while before giving up.
+        if (++misses > 15) break;
+        await sleep(2000);
+        continue;
+      }
+      misses = 0;
+      finished = null;
+      run.fresh = false;
+      if (reply.done || reply.stop || reply.wait) break;
+      if (!T.ready()) {
+        await send({ type: 'ht-error', jobId, message: 'docs_input_missing' });
+        break;
+      }
       T.focus();
+      let lastReport = Date.now();
+      let aborted = false;
+      const steps = (reply.pre || []).map((a) => [a, -1]).concat(reply.actions.slice(reply.startAt || 0).map((a, i) => [a, (reply.startAt || 0) + i]));
+      for (const [action, index] of steps) {
+        if (!(await wait(action.delay, gen))) {
+          aborted = true;
+          break;
+        }
+        if (!(await T.perform(action))) {
+          await send({ type: 'ht-error', jobId, message: 'docs_input_missing' });
+          aborted = true;
+          break;
+        }
+        if (index >= 0 && Date.now() - lastReport > 4000) {
+          lastReport = Date.now();
+          send({ type: 'ht-progress', jobId, token: reply.token, index: index + 1 });
+        }
+      }
+      if (aborted) break;
+      finished = reply.token;
     }
-    setButtons();
+    if (run.gen === gen) indicate('');
   }
 
-  function stop(msg) {
-    job.token++;
-    job.status = 'idle';
-    setButtons();
-    say(msg);
+  function halt() {
+    run.gen++;
+    run.paused = false;
+    indicate('');
   }
 
-  // Gizli sekmede zamanlayıcılar kısıtlanır; prototip burada durur.
+  // Timers are throttled in hidden tabs, so typing pauses until the tab is
+  // visible again.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && job.status === 'running') togglePause('Sekme gizlendi, duraklatıldı. Geri dönünce Sürdür\'e bas.');
+    if (!run.jobId) return;
+    run.paused = document.hidden;
+    send({ type: 'ht-visibility', jobId: run.jobId, hidden: document.hidden });
+    if (host.style.display !== 'none') indicate(document.hidden ? 'Human Typer · paused (tab hidden)' : 'Human Typer · typing');
   });
 
-  // --- ölçüm testi ----------------------------------------------------------
-  // Bilinen bir diziyi yazar, sonra belgenin düz metin dışa aktarımını okuyup
-  // karşılaştırır. Sentetik olayların bu Docs sürümünde çalışıp çalışmadığını gösterir.
+  // --- self-test ------------------------------------------------------------
+  // Types a known sequence at the caret; the worker then exports the document
+  // and compares. Shows whether synthetic input works on this Docs build.
   const PROBES = [
     ['ASCII', 'abc XYZ 123'],
-    ['Türkçe küçük', 'ığüşöç'],
-    ['Türkçe büyük', 'İĞÜŞÖÇ'],
-    ['Noktalama', 'a.b,c;d?e'],
-    ['Backspace', 'sil'], // "silX" yazılır, X silinir
+    ['Turkish lower', 'ığüşöç'],
+    ['Turkish upper', 'İĞÜŞÖÇ'],
+    ['Punctuation', 'a.b,c;d?e'],
+    ['Backspace', 'del'], // "delX" is typed, then X is removed
   ];
-
-  function exportText() {
-    const m = location.pathname.match(/\/document\/d\/([\w-]+)/);
-    if (!m) return Promise.resolve({ ok: false, error: 'belge kimliği bulunamadı' });
-    return new Promise((res) => {
-      chrome.runtime.sendMessage({ type: 'ht-export', docId: m[1] }, (r) => {
-        res(r || { ok: false, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'yanıt yok' });
-      });
-    });
-  }
-
   async function selfTest() {
-    if (!T.ready()) return say('Docs giriş çerçevesi bulunamadı.');
-    ui.start.disabled = ui.test.disabled = true;
+    if (!T.ready()) return { ok: false, error: 'docs_input_missing' };
     const marker = 'HT' + Date.now().toString(36);
-    const gap = 45;
     const lines = [marker, ...PROBES.map((p) => p[1])];
-    say('Ölçüm testi yazılıyor…');
     T.focus();
-
     const before = T.caret();
     T.typeChar(marker[0]);
     await sleep(300);
     const after = T.caret();
     const caretMoved = before && after ? before.x !== after.x || before.y !== after.y : null;
-
-    const seq = Array.from(lines.join('\n')).slice(1);
-    for (const ch of seq) {
+    for (const ch of Array.from(lines.join('\n')).slice(1)) {
       T.typeChar(ch);
-      await sleep(gap);
+      await sleep(45);
     }
     T.typeChar('X');
-    await sleep(gap);
+    await sleep(45);
     T.backspace();
-    await sleep(gap);
-    T.typeChar('\n');
-
-    say('Yazıldı. Docs\'un kaydetmesi bekleniyor…');
-    let report = [`İmleç ilk tuşta hareket etti: ${caretMoved === null ? 'imleç bulunamadı' : caretMoved ? 'evet' : 'HAYIR'}`];
-    let exp = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await sleep(2000);
-      exp = await exportText();
-      if (exp.ok && exp.text.includes(marker)) break;
-    }
-    if (!exp.ok) {
-      report.push(`Dışa aktarım okunamadı: ${exp.error}`, 'Sonucu belgede gözle kontrol et.');
-    } else if (!exp.text.includes(marker)) {
-      report.push('İşaret satırı belgede yok: sentetik tuşlar metin eklemedi.');
-    } else {
-      const got = exp.text.replace(/\r\n?/g, '\n').split(marker).pop().split('\n').slice(1);
-      PROBES.forEach(([label, want], i) => {
-        const have = got[i] === undefined ? '(yok)' : got[i];
-        const mark = have === want ? '✓' : have.toLocaleLowerCase('tr') === want.toLocaleLowerCase('tr') ? '≈ (büyük/küçük harf)' : '✗';
-        report.push(`${mark} ${label}: beklenen "${want}", gelen "${have}"`);
-      });
-    }
-    say(report.join('\n'));
-    console.log('[human-typer] ölçüm testi\n' + report.join('\n'));
-    setButtons();
+    await sleep(45);
+    T.key('Enter');
+    return { ok: true, marker, probes: PROBES, caretMoved };
   }
 
-  setButtons();
+  // --- messages from the worker ---------------------------------------------
+  chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if (!msg || typeof msg.type !== 'string') return false;
+    switch (msg.type) {
+      case 'ht-ping':
+        respond({ ok: true, ready: T.ready(), hidden: document.hidden, running: run.jobId && host.style.display !== 'none' });
+        return false;
+      case 'ht-start':
+        loop(msg.jobId);
+        respond({ ok: true });
+        return false;
+      case 'ht-pause':
+      case 'ht-stop':
+        halt();
+        respond({ ok: true });
+        return false;
+      case 'ht-selftest':
+        selfTest().then(respond);
+        return true;
+      default:
+        return false;
+    }
+  });
+
+  // A reloaded page picks its job back up.
+  send({ type: 'ht-hello', url: location.href }).then((reply) => {
+    if (reply && reply.start) loop(reply.start);
+  });
 })();

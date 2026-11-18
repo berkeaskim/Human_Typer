@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Typer</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+
+<!-- Inline icon sprite (no network requests, CSP-safe). -->
+<svg class="sprite" aria-hidden="true" focusable="false" width="0" height="0">
+  <symbol id="i-file" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11.5 2.5H6A1.5 1.5 0 0 0 4.5 4v12A1.5 1.5 0 0 0 6 17.5h8a1.5 1.5 0 0 0 1.5-1.5V6.5z"/>
+    <path d="M11.5 2.5v4h4"/>
+    <path d="M7.5 10.5h5M7.5 13.5h3.5"/>
+  </symbol>
+  <symbol id="i-warn" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 3.2 2.6 16h14.8z"/>
+    <path d="M10 8.2v3.6"/>
+    <path d="M10 14.1v.1"/>
+  </symbol>
+  <symbol id="i-table" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="14" height="12" rx="1.5"/>
+    <path d="M3 8.5h14M3 12.5h14M8 8.5V16"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m4.5 10.5 3.5 3.5 7.5-8"/>
+  </symbol>
+</svg>
+
+<div class="app" id="app">
+
+  <header class="hdr">
+    <div class="hdr__row">
+      <h1 class="brand">
+        <!-- Same artwork as logo.svg, inlined so the caret can take the theme accent and blink while typing. -->
+        <svg class="brand__mark" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path class="brand__wave" d="M4.2 14.6c1.5-4 3.4-4 4.9-.6s3.4 3.4 4.9-.6" stroke-width="2.2"/>
+          <path class="brand__caret" d="M18.4 6.4v11.2" stroke-width="2.2"/>
+        </svg>
+        <span class="brand__name">Human Typer</span>
+      </h1>
+      <div class="lang" role="group" data-i18n-aria-label="lang.label">
+        <button type="button" class="lang__btn" data-lang="en" lang="en" aria-label="English">EN</button>
+        <button type="button" class="lang__btn" data-lang="tr" lang="tr" aria-label="Türkçe">TR</button>
+      </div>
+    </div>
+    <p class="target" id="target" role="status">
+      <span class="target__dot" aria-hidden="true"></span>
+      <span class="target__text" id="targetText"></span>
+    </p>
+  </header>
+
+  <main class="main">
+
+    <!-- ───────────── Setup view ───────────── -->
+    <div id="setupView">
+
+      <section class="sec" aria-labelledby="docTitle">
+        <div class="sec__head">
+          <h2 class="sec__title" id="docTitle" data-i18n="doc.title"></h2>
+        </div>
+
+        <!-- Empty: drop zone + paste -->
+        <div id="docEmpty">
+          <button type="button" class="drop" id="dropZone" aria-describedby="dropHint">
+            <svg class="drop__icon" width="20" height="20" aria-hidden="true"><use href="#i-file"/></svg>
+            <span class="drop__main" id="dropMain"></span>
+            <span class="drop__hint" id="dropHint" data-i18n="doc.browse"></span>
+          </button>
+          <input type="file" id="fileInput" class="visually-hidden" tabindex="-1" aria-hidden="true"
+                 accept=".docx,.md,.markdown,.txt,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+
+          <button type="button" class="link" id="pasteToggle" aria-expanded="false" aria-controls="pasteBox"></button>
+
+          <div class="reveal" id="pasteBox" inert><div class="reveal__in paste">
+            <label class="field__label" for="pasteText" data-i18n="doc.pasteLabel"></label>
+            <textarea id="pasteText" class="textarea" rows="6" spellcheck="false" data-i18n-placeholder="doc.pastePlaceholder"></textarea>
+            <div class="paste__row">
+              <span class="hint" id="pasteCount"></span>
+              <button type="button" class="btn btn--quiet" id="pasteUse" data-i18n="doc.pasteUse"></button>
+            </div>
+          </div></div>
+
+          <p class="note note--danger" id="docError" role="alert" hidden></p>
+          <p class="hint doc__template" data-i18n="doc.templateHint"></p>
+        </div>
+
+        <!-- Loaded: file summary + outline -->
+        <div id="docLoaded" hidden>
+          <div class="file">
+            <svg class="file__icon" width="20" height="20" aria-hidden="true"><use href="#i-file"/></svg>
+            <div class="file__body">
+              <p class="file__name" id="fileName"></p>
+              <p class="file__stats" id="fileStats"></p>
+            </div>
+            <button type="button" class="btn btn--quiet btn--sm" id="replaceBtn" data-i18n="doc.replace"></button>
+          </div>
+          <ul class="warns" id="docWarnings" hidden></ul>
+          <ol class="outline" id="outline" data-i18n-aria-label="doc.outline"></ol>
+          <p class="hint outline__more" id="outlineMore" hidden></p>
+        </div>
+      </section>
+
+      <section class="sec" aria-labelledby="styleTitle">
+        <div class="sec__head">
+          <h2 class="sec__title" id="styleTitle" data-i18n="style.title"></h2>
+        </div>
+
+        <!-- Pace is not a setting: the planner picks and varies it. -->
+        <div class="field pace">
+          <div class="field__top">
+            <span class="field__label" data-i18n="style.pace"></span>
+            <span class="field__value" data-i18n="style.paceValue"></span>
+          </div>
+          <p class="hint" data-i18n="style.paceHint"></p>
+          <p class="pace__estimate" id="estimate" aria-live="polite"></p>
+        </div>
+
+        <div class="field">
+          <div class="field__top">
+            <label class="field__label" for="typo" data-i18n="style.typos"></label>
+            <output class="field__value" id="typoValue" for="typo"></output>
+          </div>
+          <input type="range" id="typo" class="range" min="0" max="8" step="0.5" value="2" aria-describedby="typoHint">
+          <p class="hint" id="typoHint"></p>
+        </div>
+
+        <div class="field">
+          <div class="field__top">
+            <label class="field__label" for="layout" data-i18n="style.layout"></label>
+          </div>
+          <select id="layout" class="select" aria-describedby="layoutHint">
+            <option value="auto"></option>
+            <option value="trq"></option>
+            <option value="qwerty"></option>
+          </select>
+          <p class="hint" id="layoutHint" data-i18n="style.layoutHint"></p>
+        </div>
+      </section>
+
+      <section class="sec" aria-labelledby="schedTitle">
+        <div class="sec__head">
+          <h2 class="sec__title" id="schedTitle" data-i18n="sched.title"></h2>
+        </div>
+
+        <div class="seg" role="radiogroup" aria-labelledby="schedTitle">
+          <input type="radio" name="mode" id="modeNow" value="now" class="seg__input" checked>
+          <label for="modeNow" class="seg__label" data-i18n="sched.now"></label>
+          <input type="radio" name="mode" id="modeDeadline" value="deadline" class="seg__input">
+          <label for="modeDeadline" class="seg__label" data-i18n="sched.deadline"></label>
+        </div>
+
+        <div class="reveal is-open" id="nowHint"><div class="reveal__in"><p class="hint" data-i18n="sched.nowHint"></p></div></div>
+
+        <div class="reveal" id="deadlineBox" inert><div class="reveal__in deadline">
+          <div class="field">
+            <label class="field__label" for="deadline" data-i18n="sched.finishBy"></label>
+            <input type="datetime-local" id="deadline" class="input">
+          </div>
+
+          <fieldset class="field fieldset">
+            <legend class="field__label" data-i18n="sched.hours"></legend>
+            <div class="hours">
+              <select id="hoursStart" class="select" data-i18n-aria-label="sched.from"></select>
+              <span class="hours__dash" aria-hidden="true">–</span>
+              <select id="hoursEnd" class="select" data-i18n-aria-label="sched.to"></select>
+            </div>
+          </fieldset>
+
+          <fieldset class="field fieldset">
+            <legend class="field__label" data-i18n="sched.days"></legend>
+            <div class="chips" id="dayChips"></div>
+          </fieldset>
+
+          <div class="plan" id="plan">
+            <div class="plan__head">
+              <h3 class="plan__title" data-i18n="sched.plan"></h3>
+              <span class="plan__sum" id="planSummary"></span>
+            </div>
+            <p class="note note--warn" id="planWarn" role="alert" hidden></p>
+            <p class="hint" id="planEmpty" hidden></p>
+            <div id="planTimeline"></div>
+            <p class="hint plan__awake" id="planAwake" data-i18n="sched.awake"></p>
+          </div>
+        </div></div>
+      </section>
+    </div>
+
+    <!-- ───────────── Running view ───────────── -->
+    <div id="runView" hidden>
+      <section class="sec run" aria-labelledby="runStatus">
+        <div class="run__top">
+          <p class="status" id="runStatus" role="status" aria-live="polite">
+            <span class="status__dot" aria-hidden="true"></span>
+            <span id="runStatusText"></span>
+          </p>
+        </div>
+        <p class="run__file" id="runFile"></p>
+        <p class="run__kind" id="runKind" hidden></p>
+
+        <div class="meter">
+          <div class="meter__figs">
+            <span class="meter__pct" id="runPct"></span>
+            <span class="meter__blocks" id="runBlocks"></span>
+          </div>
+          <div class="bar" id="runBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="runStatusText">
+            <div class="bar__fill" id="runBarFill"></div>
+          </div>
+        </div>
+
+        <dl class="facts" id="runFacts"></dl>
+
+        <!-- Template fill: what the worker did to the existing document. -->
+        <div class="fill" id="runFill" hidden>
+          <p class="fill__sum" id="runFillSum"></p>
+          <details class="fill__problems" id="runFillProblems" hidden>
+            <summary id="runFillProblemsSum"></summary>
+            <ul id="runFillProblemsList"></ul>
+          </details>
+        </div>
+
+        <p class="note" id="runNote" hidden></p>
+
+        <div class="run__actions" id="runActions">
+          <button type="button" class="btn btn--primary" id="pauseBtn"></button>
+          <button type="button" class="btn btn--quiet" id="stopBtn" data-i18n="run.stop"></button>
+          <button type="button" class="btn btn--primary" id="newBtn" data-i18n="run.new" hidden></button>
+        </div>
+
+        <div class="reveal" id="stopConfirm" role="alertdialog" aria-labelledby="stopAsk" inert><div class="reveal__in"><div class="confirm">
+          <p class="confirm__text" id="stopAsk" data-i18n="run.stopAsk"></p>
+          <div class="confirm__row">
+            <button type="button" class="btn btn--danger" id="stopYes" data-i18n="run.stopYes"></button>
+            <button type="button" class="btn btn--quiet" id="stopNo" data-i18n="run.stopNo"></button>
+          </div>
+        </div></div></div>
+      </section>
+
+      <section class="sec" id="runSittings" aria-labelledby="runSittingsTitle" hidden>
+        <div class="sec__head">
+          <h2 class="sec__title" id="runSittingsTitle" data-i18n="run.sittings"></h2>
+          <span class="plan__sum" id="runSittingsSum"></span>
+        </div>
+        <div id="runTimeline"></div>
+        <ul class="legend" id="runLegend" aria-hidden="true"></ul>
+        <p class="hint plan__awake" data-i18n="sched.awake"></p>
+      </section>
+    </div>
+  </main>
+
+  <!-- Primary action (setup view only) -->
+  <div class="action" id="actionBar">
+    <button type="button" class="btn btn--primary btn--block" id="startBtn" aria-describedby="startReason"></button>
+    <p class="action__reason" id="startReason" aria-live="polite"></p>
+  </div>
+
+  <footer class="foot">
+    <div class="foot__row">
+      <button type="button" class="link link--muted" id="selftestBtn" aria-controls="selftestBox" aria-expanded="false" data-i18n="footer.selftest"></button>
+      <span class="foot__sep" aria-hidden="true">·</span>
+      <button type="button" class="link link--muted" id="aboutBtn" aria-controls="aboutBox" aria-expanded="false" data-i18n="footer.about"></button>
+      <span class="foot__preview" id="previewBadge" data-i18n="footer.preview" hidden></span>
+    </div>
+    <div class="reveal" id="selftestBox" inert><div class="reveal__in foot__panel">
+      <pre class="selftest" id="selftestOut" role="status" aria-live="polite" tabindex="0" data-i18n-aria-label="selftest.label"></pre>
+    </div></div>
+    <div class="reveal" id="aboutBox" inert><div class="reveal__in foot__panel">
+      <p class="about__version" id="aboutVersion"></p>
+      <p class="hint" data-i18n="about.disclaimer"></p>
+    </div></div>
+  </footer>
+</div>
+
+<!-- Libraries written by other parts of the project. Each one is optional at
+     load time: sidepanel.js feature-detects and mock.js supplies stubs. -->
+<script src="../lib/docmodel.js"></script>
+<script src="../lib/zip.js"></script>
+<script src="../lib/docx.js"></script>
+<script src="../lib/markdown.js"></script>
+<script src="../lib/scheduler.js"></script>
+<script src="../planner.js"></script>
+
+<script src="i18n.js"></script>
+<script src="mock.js"></script>
+<script src="sidepanel.js"></script>
+</body>
+</html>
