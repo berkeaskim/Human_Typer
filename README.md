@@ -42,7 +42,7 @@ Drop a `.docx`, `.md` or `.txt` file into the side panel, open a Google Doc, and
 
 ## Install
 
-Human Typer is not on the Chrome Web Store. Load it from source:
+Human Typer is not on the Chrome Web Store. Load it from source (Chrome 116 or newer):
 
 1. Clone this repository.
 2. Open `chrome://extensions` and turn on **Developer mode**.
@@ -57,6 +57,8 @@ After pulling new changes, press the reload button on the extension card and rel
 2. Open the side panel and drop your document in.
 3. Adjust the typo rate and keyboard layout if you want to.
 4. Choose **Start now** or **Finish by…**, then start.
+
+To try it without a document of your own, use [`docs/samples/sample.docx`](docs/samples/sample.docx): a short Turkish text with a heading, inline styles, a bulleted and a numbered list, and a small table.
 
 Keep the Google Docs tab visible while it types. Chrome slows timers in hidden tabs, so typing pauses when the tab is hidden and continues when you return. Scheduled sittings need the computer awake and Chrome running.
 
@@ -108,7 +110,7 @@ To preview the panel without loading the extension, serve the folder and open it
 cd human-typer && python3 -m http.server 8765
 ```
 
-Then visit `http://localhost:8765/ui/sidepanel.html?state=running&lang=en`. States: `empty`, `loaded`, `deadline`, `running`, `paused`, `waiting`, `done`, `error`, `fill`, `filldone`.
+Then visit `http://localhost:8765/ui/sidepanel.html?state=running&lang=en`. States: `empty`, `notarget`, `loaded`, `deadline`, `infeasible`, `running`, `paused`, `waiting`, `done`, `error`, `stopped`, `fill`, `filldone`. Add `lang=tr` for the Turkish interface.
 
 The `reports/` and `research_notes/` folders hold the background research behind the design (in Turkish).
 
