@@ -295,6 +295,41 @@
     return true;
   }
 
+  // --- spelling autocorrect -------------------------------------------------
+  // Docs silently "fixes" typos the document keeps on purpose ("grammer" ->
+  // "grammar"). Tools › Preferences › "Automatically correct spelling" turns
+  // that off; it is an account-wide setting and stays off afterwards.
+  // Checkbox ids are generated, so the box is found by its label (several
+  // UI languages) or, failing that, as the one right after "Markdown".
+  // Best effort: if the menu or box is not found, typing goes on anyway.
+  const SPELL_LABELS = ['automatically correct spelling', 'yazımı otomatik olarak düzelt', 'rechtschreibung automatisch korrigieren', 'corregir la ortografía automáticamente', "corriger automatiquement l'orthographe"];
+  async function disableSpellingAutocorrect() {
+    const menu = document.getElementById('docs-tools-menu');
+    if (!menu) return true;
+    mouse(menu, CLICK);
+    const icon = await waitFor('.goog-menu .docs-icon-editors-ia-user-preference-settings', 3000);
+    if (!icon) return closeMenus().then(() => true);
+    mouse(icon.closest('.goog-menuitem'), CLICK);
+    const group = await waitFor('[role=dialog] .docsPreferencesDialogPreferenceCheckboxes', 4000);
+    if (!group) return closeMenus().then(() => true);
+    const dialog = group.closest('[role=dialog]');
+    const boxes = [...group.querySelectorAll('input[type=checkbox]')];
+    const label = (cb) => (cb.closest('[class*=FormField], label') || cb.parentElement.parentElement).textContent.trim().toLowerCase();
+    let box = boxes.find((cb) => SPELL_LABELS.includes(label(cb)));
+    if (!box) {
+      const md = boxes.findIndex((cb) => label(cb).includes('markdown'));
+      if (md >= 0) box = boxes[md + 1];
+    }
+    if (box && box.checked) box.click();
+    await sleep(300);
+    const ok = [...dialog.querySelectorAll('button[data-mdc-dialog-action=ok]')].find(visible);
+    if (ok) ok.click();
+    else await closeMenus();
+    await sleep(700);
+    focus();
+    return true; // best effort: never stops the job
+  }
+
   async function closeMenus() {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
     await sleep(200);
@@ -445,6 +480,8 @@
         return pasteParagraph(action);
       case 'fonts':
         return ensureFonts(action.families);
+      case 'noAutocorrect':
+        return disableSpellingAutocorrect();
       case 'pageNumbers':
         return insertPageNumbers(action.where, action.skipFirst);
       case 'paste':
@@ -470,5 +507,5 @@
     return { x: Math.round(r.left), y: Math.round(r.top) };
   }
 
-  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, insertPageNumbers, ensureFonts, pasteText, focus, caret, isMac: IS_MAC };
+  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, insertPageNumbers, ensureFonts, disableSpellingAutocorrect, pasteText, focus, caret, isMac: IS_MAC };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

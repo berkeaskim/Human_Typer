@@ -293,6 +293,8 @@ async function buildCompose(job, fresh) {
     // Fonts first: Docs drops pasted fonts that are not in the user's font menu.
     const families = Planner.docFonts(doc, plannerOpts(job));
     if (families.length) pre.push({ type: 'fonts', families, delay: 600 });
+    // Docs' spelling autocorrect would "fix" typos the document keeps.
+    pre.push({ type: 'noAutocorrect', delay: 500 });
     pre.push({ type: 'key', key: 'DocEnd', delay: 800 });
   }
   return { pre, actions: planned.actions, carry: planned.carry };
@@ -308,7 +310,7 @@ async function buildFill(job, fresh) {
       wpm: Planner.targetWpm(plannerOpts(job), job.item), // same drifting pace as whole-document typing
     }));
   const pre = fresh
-    ? [{ type: 'key', key: 'DocStart', delay: 900 }].concat(navKeys('ParaEnd', Fill.resumeAdvance(plan, job.item), 90))
+    ? [{ type: 'noAutocorrect', delay: 500 }, { type: 'key', key: 'DocStart', delay: 900 }].concat(navKeys('ParaEnd', Fill.resumeAdvance(plan, job.item), 90))
     : navKeys('ParaEnd', unit.advance, 140);
   if (pre.length > 1) pre[pre.length - 1].delay += 400;
   let actions = [];

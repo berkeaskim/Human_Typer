@@ -116,7 +116,7 @@ test('types a whole formatted document into an empty Google Doc and verifies it'
     if (!firstPre) firstPre = reply.pre;
     all.push(...reply.actions);
   });
-  assert.deepStrictEqual(firstPre.map((a) => a.key), ['DocEnd']);
+  assert.deepStrictEqual(firstPre.map((a) => a.key || a.type), ['noAutocorrect', 'DocEnd']);
   assert.ok(end.done);
   assert.deepStrictEqual(Planner.simulateDoc(all), Planner.normalizeDoc(source));
   job = ui.last().job;
@@ -142,13 +142,14 @@ test('fills only the missing parts when the Google Doc already holds the templat
 
   const typed = [];
   const end = await drive(job.id, (reply) => {
-    const nav = reply.pre.map((a) => a.key);
-    typed.push({ nav, text: Planner.simulate(reply.actions.filter((a) => a.type !== 'key')) });
+    const nav = reply.pre.filter((a) => a.type === 'key').map((a) => a.key);
+    typed.push({ nav, pre0: reply.pre[0] && reply.pre[0].type, text: Planner.simulate(reply.actions.filter((a) => a.type !== 'key')) });
     if (typed.length === 3) live = filled; // after the last unit the document matches
   });
   assert.ok(end.done);
   assert.deepStrictEqual(typed.map((t) => t.text), [' Ayşe Yılmaz', 'İzmir', 'Teşekkürler.']);
   assert.strictEqual(typed[0].nav[0], 'DocStart'); // a fresh page walks from the top
+  assert.strictEqual(typed[0].pre0, 'noAutocorrect');
   assert.ok(typed[1].nav.every((k) => k === 'ParaEnd') && typed[1].nav.length > 0);
   assert.strictEqual(ui.last().job.status, 'done');
 });
