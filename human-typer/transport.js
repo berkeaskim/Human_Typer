@@ -335,9 +335,10 @@
     // Docs reads a negative text-indent as "indent start = margin-left -
     // text-indent" (live-tested), so a Word hanging indent (left L, hanging
     // H) is sent as margin-left L - H.
+    // Always explicit: a missing indent keeps the caret paragraph's own
+    // (live run: a heading after a hanging-indent paragraph inherited it).
     const left = (f.left || 0) + (f.firstLine < 0 ? f.firstLine : 0);
-    if (left) css.push('margin-left:' + left + 'pt');
-    if (f.firstLine) css.push('text-indent:' + f.firstLine + 'pt');
+    css.push('margin-left:' + left + 'pt', 'text-indent:' + (f.firstLine || 0) + 'pt');
     css.push('text-align:' + (a.align || 'left'));
     return (
       '<meta charset="utf-8"><b style="font-weight:normal;" id="' + guid() + '"><' + tag + ' dir="ltr" style="' + css.join(';') + ';">' +
@@ -392,11 +393,15 @@
     // centred, indented or list paragraph Docs' first Backspace only resets
     // that (live-tested: the caret jumps left, same line), so press again
     // until the caret is on the pasted paragraph's line.
+    // Press again only while the caret is still on that same line: any
+    // other movement means the join happened (a further Backspace would
+    // delete the first letter, as seen once in a table cell).
     const y0 = at ? at.y : null;
     for (let k = 0; k < 4; k++) {
       key('Backspace');
       if (y0 === null || (await until((now) => now.y < y0 - 2, 1500))) break;
-      await stable(600);
+      const now = await stable(600);
+      if (!now || Math.abs(now.y - y0) > 2) break;
     }
     if (a.empty) {
       at = await stable();
