@@ -158,6 +158,18 @@
     return true;
   }
 
+  // --- links ------------------------------------------------------------------
+  // A link is pasted as plain text in one go, like a writer copying it from
+  // the source tab. Plain text only, so it takes the formatting at the caret.
+  function pasteText(text) {
+    const t = target();
+    if (!t) return false;
+    const data = new t.win.DataTransfer();
+    data.setData('text/plain', String(text));
+    t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
+    return true;
+  }
+
   // --- one planned action ---------------------------------------------------
   // Returns true when the action was dispatched. May be async (tables).
   function perform(action) {
@@ -172,6 +184,8 @@
         return format(action);
       case 'table':
         return insertTable(action.rows, action.cols);
+      case 'paste':
+        return pasteText(action.text);
       default:
         return false;
     }
@@ -193,5 +207,5 @@
     return { x: Math.round(r.left), y: Math.round(r.top) };
   }
 
-  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, focus, caret, isMac: IS_MAC };
+  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, pasteText, focus, caret, isMac: IS_MAC };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

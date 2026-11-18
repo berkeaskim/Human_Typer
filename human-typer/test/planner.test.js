@@ -73,3 +73,12 @@ test('speed fluctuates through the text and differs for every seed', () => {
   }
   assert.notDeepStrictEqual(windowWpm(1), windowWpm(2));
 });
+
+test('plain-text plans paste links instead of typing them', () => {
+  const text = 'Kaynak: https://example.com/x?y=1 ve www.test.org.\nSon.';
+  for (let seed = 1; seed <= 30; seed++) {
+    const acts = plan(text, { seed, typoRate: 0.3 });
+    assert.deepStrictEqual(acts.filter((a) => a.type === 'paste').map((a) => a.text), ['https://example.com/x?y=1', 'www.test.org']);
+    assert.strictEqual(simulate(acts), text);
+  }
+});

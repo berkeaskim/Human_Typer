@@ -2,7 +2,7 @@
 // Run from the extension folder: node --test   (or: node --test test/*.test.js)
 const test = require('node:test');
 const assert = require('node:assert');
-const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS } = require('../planner.js');
+const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS, splitLinks } = require('../planner.js');
 
 // --- document builders -----------------------------------------------------
 const P = (runs, extra) =>
@@ -254,7 +254,9 @@ test('estimate matches the plans, is fast, and lands near the requested speed', 
   assert.deepStrictEqual(small.perBlockMs, perBlock.map((acts) => acts.reduce((s, a) => s + a.delay, 0)));
   assert.strictEqual(small.ms, small.perBlockMs.reduce((s, x) => s + x, 0));
   assert.strictEqual(small.keys, perBlock.flat().length);
-  assert.strictEqual(small.chars, perBlock.flat().filter((a) => a.type === 'char').length - perBlock.flat().filter((a) => a.type === 'back').length);
+  const flat = perBlock.flat();
+  const pasted = flat.filter((a) => a.type === 'paste').reduce((n, a) => n + Array.from(a.text).length, 0);
+  assert.strictEqual(small.chars, flat.filter((a) => a.type === 'char').length - flat.filter((a) => a.type === 'back').length + pasted);
   assert.deepStrictEqual(estimate({ blocks: [] }, {}), { ms: 0, chars: 0, keys: 0, perBlockMs: [] });
 
   const doc = longDoc(10000);
@@ -352,5 +354,36 @@ test('some blocks start with a longer rest, never the first one', () => {
   for (let seed = 1; seed <= 200; seed++) {
     const a = planBlock(doc, 0, { seed, typoRate: 0 }, initialCarry()).actions;
     assert.ok(a[0].delay < 1000 && a[1].delay < 5000, `seed ${seed}`);
+  }
+});
+
+test('links are pasted one by one, the rest is typed', () => {
+  assert.deepStrictEqual(splitLinks('See https://example.com/a_(b). And www.x.org, ok'), [
+    { text: 'See ', link: false },
+    { text: 'https://example.com/a_(b)', link: true },
+    { text: '. And ', link: false },
+    { text: 'www.x.org', link: true },
+    { text: ', ok', link: false },
+  ]);
+  assert.deepStrictEqual(splitLinks('(Smith, 2020, https://doi.org/10.1/abc)'), [
+    { text: '(Smith, 2020, ', link: false },
+    { text: 'https://doi.org/10.1/abc', link: true },
+    { text: ')', link: false },
+  ]);
+  assert.deepStrictEqual(splitLinks('no links here'), [{ text: 'no links here', link: false }]);
+
+  const doc = {
+    blocks: [
+      H('h1', 'References'),
+      P([{ text: 'Smith, J. (2020). A study. ' }, { text: 'Journal', italic: true }, { text: '. https://doi.org/10.1000/xyz123' }]),
+      P('Doe, A. (2021). Retrieved from https://example.com/page?id=4 and http://b.org/c.'),
+    ],
+  };
+  for (let seed = 1; seed <= 40; seed++) {
+    const { actions } = planAll(doc, { seed, typoRate: 0.3 });
+    const pastes = actions.filter((a) => a.type === 'paste').map((a) => a.text);
+    assert.deepStrictEqual(pastes, ['https://doi.org/10.1000/xyz123', 'https://example.com/page?id=4', 'http://b.org/c']);
+    for (const a of actions) if (a.type === 'paste') assert.ok(a.delay >= 1200, `paste delay ${a.delay}`);
+    assert.deepStrictEqual(simulateDoc(actions), normalizeDoc(doc));
   }
 });

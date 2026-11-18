@@ -14,6 +14,7 @@
 //   { type: 'format', op, delay }          see FORMAT_OPS; 'list:none' also carries
 //                                          kind and level of the list being left
 //   { type: 'table',  rows, cols, delay }  insert an empty table, caret in first cell
+//   { type: 'paste',  text, delay }        paste `text` as plain text in one go (links)
 (function (root) {
   'use strict';
 
@@ -103,6 +104,7 @@
     lagCdf: [0.48, 0.73, 0.85, 0.91, 1], // measured: error noticed 0,1,2,3,4 letters later
     firstBack: 420, // measured
     nextBack: 195, // measured (170–222)
+    pasteLink: [2600, 0.35, 1200, 6000], // assumed: switch to the source tab, copy the link, come back, paste
 
     // Structural actions. All assumed: there is no published keystroke data
     // for formatting shortcuts or table handling. [mean, sigma, min, max] in ms.
@@ -264,7 +266,39 @@
         p1 = undefined;
         p2 = undefined;
       },
+      // Text that reached the page without being typed (a paste): the next
+      // character follows its last two characters.
+      after(text) {
+        const a = Array.from(text);
+        if (a.length) p1 = a[a.length - 1];
+        if (a.length > 1) p2 = a[a.length - 2];
+      },
     };
+  }
+
+  // Splits text into [{ text, link }] segments. Links (http(s)://… or www.…)
+  // are pasted, not typed: nobody types a URL out by hand. Trailing sentence
+  // punctuation and an unbalanced closing bracket stay outside the link.
+  const LINK_RE = /(?:https?:\/\/|www\.)[^\s<>"]+/giu;
+  function trimLink(url) {
+    let u = url.replace(/[.,;:!?'"’”]+$/u, '');
+    for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']]) {
+      while (u.endsWith(close) && u.split(close).length > u.split(open).length) u = u.slice(0, -1).replace(/[.,;:!?'"’”]+$/u, '');
+    }
+    return u;
+  }
+  function splitLinks(text) {
+    const out = [];
+    let last = 0;
+    for (const m of text.matchAll(LINK_RE)) {
+      const url = trimLink(m[0]);
+      if (!/[\p{L}\p{N}]/u.test(url.replace(/^(?:https?:\/\/|www\.)/iu, ''))) continue;
+      if (m.index > last) out.push({ text: text.slice(last, m.index), link: false });
+      out.push({ text: url, link: true });
+      last = m.index + url.length;
+    }
+    if (last < text.length) out.push({ text: text.slice(last), link: false });
+    return out;
   }
 
   // Smooth value noise in [0, 1) over a real position, fixed by `seed`.
@@ -315,13 +349,28 @@
     const r = rng32(o.seed);
     const prof = makeProfile(r);
     const out = [];
-    const chars = Array.from(String(text).replace(/\r\n?/g, '\n'));
-    makeTypist(r, prof, o, resolveLayout(o), (a) => out.push(a)).type(chars);
+    const typed = [];
+    const typist = makeTypist(r, prof, o, resolveLayout(o), (a) => {
+      out.push(a);
+      typed.push(a);
+    });
+    let n = 0;
+    for (const seg of splitLinks(String(text).replace(/\r\n?/g, '\n'))) {
+      if (seg.link) {
+        const [mean, sigma, lo, hi] = P.pasteLink;
+        out.push({ type: 'paste', text: seg.text, delay: Math.round(clamp(logn(r, mean, sigma), lo, hi)) });
+        typist.after(seg.text);
+        continue;
+      }
+      const chars = Array.from(seg.text);
+      typist.type(chars);
+      n += chars.length;
+    }
     // Multipliers, pauses and corrections all lengthen the total. Measured
-    // typing speeds already include them, so the plan is scaled back to the
-    // requested speed.
-    const total = totalDelay(out);
-    if (total > 0) scaleDelays(out, (chars.length * meanIki(o)) / total);
+    // typing speeds already include them, so the typed part is scaled back to
+    // the requested speed; pasting a link is extra time on top.
+    const total = totalDelay(typed);
+    if (total > 0) scaleDelays(typed, (n * meanIki(o)) / total);
     return out;
   }
 
@@ -331,6 +380,7 @@
     const buf = [];
     for (const a of actions) {
       if (a.type === 'char') buf.push(a.ch);
+      else if (a.type === 'paste') buf.push(...Array.from(a.text));
       else if (a.type === 'back') buf.pop();
     }
     return buf.join('');
@@ -558,11 +608,18 @@
       typist.reset();
       for (const run of p.runs) {
         setInline(runFormatBits(run));
-        const chars = Array.from(run.text);
-        const first = out.length;
-        typist.type(chars);
-        claimPause(out[first]);
-        textChars += chars.length;
+        for (const seg of splitLinks(run.text)) {
+          if (seg.link) {
+            push({ type: 'paste', text: seg.text, delay: human(P.pasteLink) });
+            typist.after(seg.text);
+            continue;
+          }
+          const chars = Array.from(seg.text);
+          const first = out.length;
+          typist.type(chars);
+          claimPause(out[first]);
+          textChars += chars.length;
+        }
       }
     }
 
@@ -687,6 +744,10 @@
         if (a.ch === '\n') fail('newline as a character', i);
         par.chars.push([a.ch, bits]);
         par.implicit = false;
+      } else if (a.type === 'paste') {
+        if (/[\r\n]/.test(a.text) || !a.text) fail('paste with a line break or no text', i);
+        for (const ch of Array.from(a.text)) par.chars.push([ch, bits]);
+        par.implicit = false;
       } else if (a.type === 'back') {
         if (!par.chars.length) fail('Backspace at the start of a paragraph', i);
         par.chars.pop();
@@ -772,6 +833,7 @@
     detectLayout,
     simulateDoc,
     normalizeDoc,
+    splitLinks,
   };
   root.HumanTyperPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
