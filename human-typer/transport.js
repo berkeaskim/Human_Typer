@@ -158,13 +158,28 @@
     return true;
   }
 
-  // --- links ------------------------------------------------------------------
+  // --- links and the body font ----------------------------------------------
   // A link is pasted as plain text in one go, like a writer copying it from
-  // the source tab. Plain text only, so it takes the formatting at the caret.
-  function pasteText(text) {
+  // the source tab; plain text takes the formatting at the caret. With a
+  // `style` the text is pasted in Docs' own clipboard markup with that font,
+  // size and inline formats, and the text typed after it follows it.
+  const esc = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  function styledHtml(text, st) {
+    const css = [];
+    if (st.size) css.push('font-size:' + st.size + 'pt');
+    if (st.family) css.push("font-family:'" + String(st.family).replace(/['";\\<>]/g, '') + "'");
+    css.push('color:#000000', 'background-color:transparent');
+    css.push('font-weight:' + (st.bold ? 700 : 400), 'font-style:' + (st.italic ? 'italic' : 'normal'));
+    const deco = [st.underline && 'underline', st.strike && 'line-through'].filter(Boolean).join(' ');
+    css.push('text-decoration:' + (deco || 'none'), 'vertical-align:baseline', 'white-space:pre-wrap');
+    const id = 'docs-internal-guid-' + Math.random().toString(16).slice(2, 10) + '-7fff-4a1b-9c2d-' + Date.now().toString(16).padStart(12, '0');
+    return '<meta charset="utf-8"><b style="font-weight:normal;" id="' + id + '"><span style="' + css.join(';') + ';">' + esc(text) + '</span></b>';
+  }
+  function pasteText(text, style) {
     const t = target();
     if (!t) return false;
     const data = new t.win.DataTransfer();
+    if (style) data.setData('text/html', styledHtml(text, style));
     data.setData('text/plain', String(text));
     t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
     return true;
@@ -185,7 +200,7 @@
       case 'table':
         return insertTable(action.rows, action.cols);
       case 'paste':
-        return pasteText(action.text);
+        return pasteText(action.text, action.style);
       default:
         return false;
     }

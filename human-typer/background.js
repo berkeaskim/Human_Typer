@@ -126,7 +126,7 @@ async function createJob(msg) {
     status: 'running',
     mode: msg.schedule.mode,
     fileName: msg.fileName,
-    options: { typoRate: msg.options.typoRate, layout },
+    options: { typoRate: msg.options.typoRate, layout, font: Planner.resolveFont(msg.options.font) },
     seed: (Math.random() * 2 ** 32) >>> 0,
     tabId: target.tabId,
     docUrl: target.url.match(DOC_URL)[0] + '/edit',
@@ -191,7 +191,7 @@ async function createJob(msg) {
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const plannerOpts = (job) => ({ typoRate: job.options.typoRate, layout: job.options.layout, seed: job.seed });
+const plannerOpts = (job) => ({ typoRate: job.options.typoRate, layout: job.options.layout, font: job.options.font, seed: job.seed });
 const scheduleInput = (job, workMs, now) => ({
   workMs,
   now,

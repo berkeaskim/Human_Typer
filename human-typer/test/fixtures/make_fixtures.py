@@ -157,6 +157,28 @@ MINIMAL_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
 ]) + '</w:body></w:document>'
 
 
+# Body font from the theme (minor = Cambria) via docDefaults, body size 12 pt
+# from the Normal style; a heading in another font and one small run in a
+# third font must not win.
+FONTS_STYLES = XML + f'''<w:styles {W_NS}>
+  <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="24"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/>
+    <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="32"/></w:rPr></w:style>
+</w:styles>'''
+FONTS_THEME = XML + (
+    '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="T"><a:themeElements>'
+    '<a:fontScheme name="T"><a:majorFont><a:latin typeface="Calibri Light"/></a:majorFont>'
+    '<a:minorFont><a:latin typeface="Cambria"/></a:minorFont></a:fontScheme>'
+    '</a:themeElements></a:theme>'
+)
+FONTS_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
+    p(r('A heading that is fairly long but still a heading'), style('Heading1')),
+    p(r('Body text in the theme font at twelve points, ') + r('code', '<w:rFonts w:ascii="Courier New"/><w:sz w:val="18"/>') + r(' and more body text.')),
+    p(r('Another body paragraph.')),
+]) + '</w:body></w:document>'
+
+
 def write_zip(name, parts, compression):
     path = os.path.join(HERE, name)
     with zipfile.ZipFile(path, 'w') as z:
@@ -179,6 +201,11 @@ def main():
     write_zip('sample-deflate.docx', full, zipfile.ZIP_DEFLATED)
     write_zip('sample-stored.docx', full, zipfile.ZIP_STORED)
     write_zip('minimal.docx', [('word/document.xml', MINIMAL_DOCUMENT)], zipfile.ZIP_DEFLATED)
+    write_zip('fonts.docx', [
+        ('word/document.xml', FONTS_DOCUMENT),
+        ('word/styles.xml', FONTS_STYLES),
+        ('word/theme/theme1.xml', FONTS_THEME),
+    ], zipfile.ZIP_DEFLATED)
     write_zip('no-document.docx', [('hello.txt', 'hello')], zipfile.ZIP_DEFLATED)
 
     # A stored entry relabelled as deflate, so inflating it must fail.

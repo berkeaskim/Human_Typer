@@ -138,6 +138,27 @@
           </select>
           <p class="hint" id="layoutHint" data-i18n="style.layoutHint"></p>
         </div>
+
+        <div class="field">
+          <div class="field__top">
+            <label class="field__label" for="fontFamily" data-i18n="style.font"></label>
+          </div>
+          <div class="fontrow">
+            <input type="text" id="fontFamily" class="input" list="fontList" autocomplete="off" spellcheck="false" maxlength="60" aria-describedby="fontHint">
+            <input type="number" id="fontSize" class="input" min="6" max="96" step="0.5" inputmode="decimal" data-i18n-aria-label="style.fontSize" aria-describedby="fontHint">
+          </div>
+          <datalist id="fontList">
+            <option value="Times New Roman"></option>
+            <option value="Arial"></option>
+            <option value="Calibri"></option>
+            <option value="Cambria"></option>
+            <option value="Georgia"></option>
+            <option value="Garamond"></option>
+            <option value="Verdana"></option>
+            <option value="Roboto"></option>
+          </datalist>
+          <p class="hint" id="fontHint"></p>
+        </div>
       </section>
 
       <section class="sec" aria-labelledby="schedTitle">

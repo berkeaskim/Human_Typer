@@ -209,3 +209,11 @@ test('non-zip, truncated and corrupt files reject with a clean Error', async () 
   await assert.rejects(HT.parseDocx('a string'), (e) => e instanceof Error);
   await assert.rejects(HT.parseFile('x.docx', Buffer.from('nope')), isError(/Not a ZIP archive/));
 });
+
+test('body font and size come from the bulk of the body text', async () => {
+  const { font } = await HT.parseDocx(fixture('fonts.docx'));
+  assert.deepStrictEqual(font, { family: 'Cambria', size: 12 });
+  // Files that never name a font or size report none.
+  assert.strictEqual((await HT.parseDocx(fixture('minimal.docx'))).font, undefined);
+  assert.strictEqual((await HT.parseDocx(fixture('sample-deflate.docx'))).font, undefined);
+});

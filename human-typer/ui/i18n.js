@@ -56,6 +56,11 @@
       'style.layout.trq': 'Turkish Q',
       'style.layout.qwerty': 'QWERTY (US)',
       'style.layoutHint': 'Decides which neighbouring keys get hit by mistake.',
+      'style.font': 'Body font and size',
+      'style.fontSize': 'Font size in points',
+      'style.fontPlaceholder': 'Keep the Docs default',
+      'style.fontHint': 'Normal paragraphs, lists and table cells are typed in this font and size. Headings keep their Docs style. Leave empty to keep the document as it is.',
+      'style.fontHintFile': 'Read from {name}. Normal paragraphs, lists and table cells are typed in this font and size; headings keep their Docs style.',
 
       'sched.title': 'Schedule',
       'sched.now': 'Start now',
@@ -206,6 +211,11 @@
       'style.layout.trq': 'Türkçe Q',
       'style.layout.qwerty': 'QWERTY (ABD)',
       'style.layoutHint': 'Yanlışlıkla hangi komşu tuşlara basılacağını belirler.',
+      'style.font': 'Metin yazı tipi ve punto',
+      'style.fontSize': 'Punto',
+      'style.fontPlaceholder': 'Docs varsayılanı kalsın',
+      'style.fontHint': 'Normal paragraflar, listeler ve tablo hücreleri bu yazı tipi ve puntoyla yazılır. Başlıklar Docs stilinde kalır. Boş bırakırsan belgeye dokunulmaz.',
+      'style.fontHintFile': '{name} dosyasından okundu. Normal paragraflar, listeler ve tablo hücreleri bu yazı tipi ve puntoyla yazılır; başlıklar Docs stilinde kalır.',
 
       'sched.title': 'Zamanlama',
       'sched.now': 'Şimdi başla',

@@ -397,6 +397,9 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
 }
 .input, .select { height: var(--control-h); padding: 0 10px; }
 .select { padding-right: 6px; cursor: pointer; }
+.fontrow { display: flex; gap: 8px; }
+.fontrow #fontFamily { flex: 1; min-width: 0; }
+.fontrow #fontSize { width: 76px; flex: none; font-family: var(--mono); font-size: var(--fs-sm); }
 .textarea {
   padding: 9px 10px;
   resize: vertical;

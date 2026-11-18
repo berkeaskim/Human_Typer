@@ -14,7 +14,10 @@
 //   { type: 'format', op, delay }          see FORMAT_OPS; 'list:none' also carries
 //                                          kind and level of the list being left
 //   { type: 'table',  rows, cols, delay }  insert an empty table, caret in first cell
-//   { type: 'paste',  text, delay }        paste `text` as plain text in one go (links)
+//   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
+//                                          `style` ({ family?, size?, bold, italic,
+//                                          underline, strike }) it is pasted in that
+//                                          font, so the text typed after it follows
 (function (root) {
   'use strict';
 
@@ -105,6 +108,7 @@
     firstBack: 420, // measured
     nextBack: 195, // measured (170–222)
     pasteLink: [2600, 0.35, 1200, 6000], // assumed: switch to the source tab, copy the link, come back, paste
+    fontKey: [300, 0.4, 120, 700], // assumed: the styled first character of a paragraph, like a keystroke
 
     // Structural actions. All assumed: there is no published keystroke data
     // for formatting shortcuts or table handling. [mean, sigma, min, max] in ms.
@@ -480,7 +484,19 @@
       strike: false,
       afterTable: false, // caret sits on the empty paragraph Docs keeps below a table
       started: false, // at least one block has been planned
+      fontSet: false, // text typed at the caret already comes out in opts.font
     };
+  }
+
+  // opts.font -> { family?, size? } or null. Sizes are whole or half points.
+  function resolveFont(f) {
+    if (!f || typeof f !== 'object') return null;
+    const out = {};
+    const family = typeof f.family === 'string' ? f.family.replace(/[^\p{L}\p{N} \-]/gu, '').trim().slice(0, 60) : '';
+    if (family) out.family = family;
+    const size = Math.round(Number(f.size) * 2) / 2;
+    if (size >= 6 && size <= 96) out.size = size;
+    return out.family || out.size ? out : null;
   }
 
   // A fixed sample used to measure how much this writer's pauses and typos
@@ -565,13 +581,22 @@
       if (pendingPause && action) pauses.push([action, pendingPause]);
       pendingPause = 0;
     }
-    const format = (op, extra) =>
+    // Body font (opts.font). Docs carries the font at the caret over Enter,
+    // but a paragraph style shortcut, Enter after a heading, a new table and
+    // a move to another cell all go back to the style's own font. After any
+    // of those the next normal paragraph starts with one character pasted in
+    // the body font; everything typed after it follows that character.
+    const font = resolveFont(o.font);
+    const format = (op, extra) => {
+      if (op.startsWith('style:')) c.fontSet = false;
       push(Object.assign({ type: 'format', op }, extra, { delay: human(op === 'indent' || op === 'outdent' ? P.indentKey : P.shortcut) }));
+    };
     // 'list:none' names the list it leaves: the executor toggles that kind's shortcut.
     const leaveList = () => format('list:none', { kind: c.list.kind, level: c.list.level });
     const key = (name, spec) => push({ type: 'key', key: name, delay: human(spec) });
 
     function enter() {
+      if (c.style !== 'normal') c.fontSet = false;
       key('Enter', P.enterKey);
       if (c.style !== 'normal') c.style = 'normal'; // rule 1: Enter after a heading gives 'normal'
     }
@@ -606,15 +631,32 @@
       c.align = p.align;
 
       typist.reset();
+      let restyle = Boolean(font) && p.style === 'normal' && !c.fontSet;
+      const styled = () => {
+        restyle = false;
+        c.fontSet = true;
+        const st = Object.assign({}, font);
+        for (const f of INLINE) st[f] = c[f];
+        return st;
+      };
       for (const run of p.runs) {
         setInline(runFormatBits(run));
         for (const seg of splitLinks(run.text)) {
           if (seg.link) {
-            push({ type: 'paste', text: seg.text, delay: human(P.pasteLink) });
+            const a = { type: 'paste', text: seg.text, delay: human(P.pasteLink) };
+            if (restyle) a.style = styled();
+            push(a);
             typist.after(seg.text);
             continue;
           }
-          const chars = Array.from(seg.text);
+          let chars = Array.from(seg.text);
+          if (restyle) {
+            push({ type: 'paste', text: chars[0], delay: human(P.fontKey), style: styled() });
+            typist.after(chars[0]);
+            textChars += 1;
+            chars = chars.slice(1);
+            if (!chars.length) continue;
+          }
           const first = out.length;
           typist.type(chars);
           claimPause(out[first]);
@@ -638,6 +680,7 @@
       // right because every cell was created plain.
       setInline(0);
       push({ type: 'table', rows: t.rows.length, cols, delay: human(P.tableInsert) });
+      c.fontSet = false;
       const cellStart = () => Object.assign(c, { style: 'normal', list: null, align: 'left' });
       cellStart();
       let n = 0;
@@ -646,6 +689,7 @@
           if (n++) {
             setInline(0);
             key('Tab', P.cellMove);
+            c.fontSet = false;
             cellStart();
           }
           cell.paragraphs.forEach((p, j) => paragraph(p, j > 0, j > 0 ? think(P.cellParagraphPause) : 0));
@@ -653,6 +697,7 @@
       }
       setInline(0);
       key('ArrowDown', P.cellMove);
+      c.fontSet = false;
       cellStart();
       return true;
     }
@@ -746,6 +791,7 @@
         par.implicit = false;
       } else if (a.type === 'paste') {
         if (/[\r\n]/.test(a.text) || !a.text) fail('paste with a line break or no text', i);
+        if (a.style && INLINE.some((f, k) => Boolean(a.style[f]) !== Boolean(bits & (1 << k)))) fail('styled paste disagrees with the caret formats', i);
         for (const ch of Array.from(a.text)) par.chars.push([ch, bits]);
         par.implicit = false;
       } else if (a.type === 'back') {
@@ -834,6 +880,7 @@
     simulateDoc,
     normalizeDoc,
     splitLinks,
+    resolveFont,
   };
   root.HumanTyperPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -136,6 +136,9 @@
     pasteOpen: false,
     typo: 2,             // percent
     layout: 'auto',
+    fontFamily: '',      // body font for normal text; '' keeps the Docs default
+    fontSize: '',        // points, as typed; '' keeps the Docs default
+    fontFromFile: '',    // file the font fields were filled from
     mode: 'now',
     deadline: NaN,       // epoch ms
     hoursStart: 9,
@@ -164,6 +167,7 @@
   function saveSettings() {
     I.storageSet(SETTINGS_KEY, {
       typo: ui.typo, layout: ui.layout, mode: ui.mode,
+      fontFamily: ui.fontFamily, fontSize: ui.fontSize,
       hoursStart: ui.hoursStart, hoursEnd: ui.hoursEnd, days: ui.days
     });
   }
@@ -172,6 +176,8 @@
     if (!s || typeof s !== 'object') return;
     if (typeof s.typo === 'number' && s.typo >= 0 && s.typo <= 8) ui.typo = s.typo;
     if (['auto', 'trq', 'qwerty'].indexOf(s.layout) >= 0) ui.layout = s.layout;
+    if (typeof s.fontFamily === 'string') ui.fontFamily = s.fontFamily.slice(0, 60);
+    if (typeof s.fontSize === 'string' || typeof s.fontSize === 'number') ui.fontSize = String(s.fontSize).slice(0, 5);
     if (s.mode === 'now' || s.mode === 'deadline') ui.mode = s.mode;
     if (Number.isInteger(s.hoursStart) && Number.isInteger(s.hoursEnd) &&
         s.hoursStart >= 0 && s.hoursEnd <= 24 && s.hoursStart < s.hoursEnd) {
@@ -269,7 +275,13 @@
       .then(function (buf) { return Doc.parseFile(file.name, buf); })
       .then(function (res) {
         var doc = res && res.doc ? res.doc : res;
-        setDoc(doc, file.name, res && res.warnings, false);
+        if (setDoc(doc, file.name, res && res.warnings, false) && res && res.font) {
+          // The file says which font its body text is in: use it.
+          ui.fontFamily = res.font.family || '';
+          ui.fontSize = res.font.size ? String(res.font.size) : '';
+          ui.fontFromFile = file.name;
+          saveSettings();
+        }
       })
       .catch(function (err) {
         ui.loading = null;
@@ -321,7 +333,10 @@
   }
 
   function typingOptions() {
-    return { typoRate: ui.typo / 100, layout: resolvedLayout() };
+    var o = { typoRate: ui.typo / 100, layout: resolvedLayout() };
+    var font = Planner.resolveFont ? Planner.resolveFont({ family: ui.fontFamily, size: ui.fontSize }) : null;
+    if (font) o.font = font;
+    return o;
   }
 
   function recompute() {
@@ -642,6 +657,15 @@
     sel.options[1].textContent = t('style.layout.trq');
     sel.options[2].textContent = t('style.layout.qwerty');
     sel.value = ui.layout;
+
+    var fam = $('fontFamily');
+    var size = $('fontSize');
+    fam.placeholder = t('style.fontPlaceholder');
+    if (document.activeElement !== fam) fam.value = ui.fontFamily;
+    if (document.activeElement !== size) size.value = ui.fontSize;
+    $('fontHint').textContent = ui.fontFromFile && ui.doc && ui.fileName === ui.fontFromFile
+      ? t('style.fontHintFile', { name: ui.fontFromFile })
+      : t('style.fontHint');
   }
 
   function toLocalInput(ts) {
@@ -1134,6 +1158,14 @@
       saveSettings();
       render();
     });
+    function onFont() {
+      ui.fontFamily = $('fontFamily').value.trim();
+      ui.fontSize = $('fontSize').value.trim();
+      ui.fontFromFile = '';
+      saveSettings();
+    }
+    $('fontFamily').addEventListener('change', function () { onFont(); render(); });
+    $('fontSize').addEventListener('change', function () { onFont(); render(); });
   }
 
   function bindSchedule() {

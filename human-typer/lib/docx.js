@@ -119,6 +119,21 @@
     return !(v === '0' || v === 'false' || v === 'off' || v === 'none');
   }
 
+  // Font of an rPr: an explicit name, 'theme:major' / 'theme:minor', or
+  // undefined. Theme attributes win over explicit names (ECMA-376 17.3.2.26).
+  function runFont(rPr) {
+    const f = kid(rPr, 'w:rFonts');
+    if (!f) return undefined;
+    const theme = f.attrs['w:asciiTheme'] || f.attrs['w:hAnsiTheme'];
+    if (theme) return /^major/i.test(theme) ? 'theme:major' : 'theme:minor';
+    return f.attrs['w:ascii'] || f.attrs['w:hAnsi'] || undefined;
+  }
+  // Font size in points (w:sz is in half-points).
+  function runSize(rPr) {
+    const n = Number(val(rPr, 'w:sz'));
+    return n > 0 ? n / 2 : undefined;
+  }
+
   function runProps(rPr) {
     if (!rPr) return {};
     const strike = toggle(rPr, 'w:strike');
@@ -127,6 +142,8 @@
       italic: toggle(rPr, 'w:i'),
       underline: toggle(rPr, 'w:u'),
       strike: strike !== undefined ? strike : toggle(rPr, 'w:dstrike'),
+      font: runFont(rPr),
+      size: runSize(rPr),
     };
   }
 
@@ -140,7 +157,10 @@
   function readStyles(xml) {
     const byId = new Map();
     let defaultParagraph;
-    for (const s of xml ? kids(kid(parseXml(xml), 'w:styles'), 'w:style') : []) {
+    const root = xml ? kid(parseXml(xml), 'w:styles') : undefined;
+    // Document-wide run defaults (font and size most of all).
+    const defaults = runProps(kid(kid(kid(root, 'w:docDefaults'), 'w:rPrDefault'), 'w:rPr'));
+    for (const s of kids(root, 'w:style')) {
       const id = s.attrs['w:styleId'];
       byId.set(id, {
         // Built-in style names are not localized ("heading 1"), unlike style ids.
@@ -159,7 +179,19 @@
       for (let s = byId.get(id); s && !out.includes(s); s = byId.get(s.basedOn)) out.push(s);
       return out;
     };
-    return { byId, chain, defaultParagraph };
+    return { byId, chain, defaultParagraph, defaults };
+  }
+
+  // Latin typefaces of the theme's major (headings) and minor (body) fonts.
+  function readTheme(xml) {
+    const out = {};
+    if (!xml) return out;
+    const scheme = kid(kid(kid(parseXml(xml), 'a:theme'), 'a:themeElements'), 'a:fontScheme');
+    for (const [k, name] of [['major', 'a:majorFont'], ['minor', 'a:minorFont']]) {
+      const latin = kid(kid(scheme, name), 'a:latin');
+      if (latin && latin.attrs.typeface) out[k] = latin.attrs.typeface;
+    }
+    return out;
   }
 
   // Returns (numId, ilvl) -> 'bullet' | 'number' | null.
@@ -254,11 +286,13 @@
         const kind = ctx.listKind(numId, String(level));
         if (kind) list = { kind, level };
       }
-      base = mergeProps(...chain.map((s) => s.rProps).reverse());
+      base = mergeProps(ctx.styles.defaults, ...chain.map((s) => s.rProps).reverse());
     }
 
     const runs = [];
+    ctx.normal = style === 'normal';
     collectRuns(p, base, runs, ctx);
+    ctx.normal = false;
     return { type: 'paragraph', style, list, align: JC[firstVal('w:jc')] || 'left', runs };
   }
 
@@ -316,6 +350,11 @@
       }
     }
     if (!text) return;
+    // Body text font/size tally, by characters (see bodyFont).
+    if (ctx.normal && ctx.fonts) {
+      const k = (props.font || '') + '|' + (props.size || '');
+      ctx.fonts.set(k, (ctx.fonts.get(k) || 0) + text.replace(/\s/g, '').length);
+    }
     const run = { text };
     if (inLink) props.underline = false;
     for (const f of ['bold', 'italic', 'underline', 'strike']) if (props[f]) run[f] = true;
@@ -370,6 +409,21 @@
     }
   }
 
+  // The font family and size most of the body text is in: { family, size }
+  // (either may be missing when the file does not say).
+  function bodyFont(fonts, theme) {
+    let best = null;
+    let most = 0;
+    for (const [k, n] of fonts) if (n > most) [best, most] = [k, n];
+    if (!best) return null;
+    const [f, sz] = best.split('|');
+    const family = f.startsWith('theme:') ? theme[f.slice(6)] : f;
+    const out = {};
+    if (family) out.family = family;
+    if (sz) out.size = Number(sz);
+    return out.family || out.size ? out : null;
+  }
+
   function buildWarnings(skipped) {
     const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
     const items = [
@@ -413,6 +467,7 @@
     if (!body) throw new Error('Not a Word document (document body is missing)');
 
     const ctx = {
+      fonts: new Map(),
       styles: readStyles(await readText(dir + 'styles.xml')),
       listKind: readNumbering(await readText(dir + 'numbering.xml')),
       skipped: {
@@ -429,7 +484,10 @@
     };
     const blocks = [];
     collectBlocks(body, ctx, blocks);
-    return { doc: api.normalize({ blocks }), warnings: buildWarnings(ctx.skipped) };
+    const font = bodyFont(ctx.fonts, readTheme(await readText(dir + 'theme/theme1.xml')));
+    const out = { doc: api.normalize({ blocks }), warnings: buildWarnings(ctx.skipped) };
+    if (font) out.font = font;
+    return out;
   }
 
   api.parseDocx = parseDocx;

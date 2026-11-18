@@ -2,7 +2,7 @@
 // Run from the extension folder: node --test   (or: node --test test/*.test.js)
 const test = require('node:test');
 const assert = require('node:assert');
-const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS, splitLinks } = require('../planner.js');
+const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS, splitLinks, resolveFont } = require('../planner.js');
 
 // --- document builders -----------------------------------------------------
 const P = (runs, extra) =>
@@ -153,6 +153,7 @@ test('initialCarry has the agreed shape', () => {
     strike: false,
     afterTable: false,
     started: false,
+    fontSet: false,
   });
 });
 
@@ -386,4 +387,37 @@ test('links are pasted one by one, the rest is typed', () => {
     for (const a of actions) if (a.type === 'paste') assert.ok(a.delay >= 1200, `paste delay ${a.delay}`);
     assert.deepStrictEqual(simulateDoc(actions), normalizeDoc(doc));
   }
+});
+
+test('the body font is pasted once per normal stretch and re-set after styles and cells', () => {
+  const font = { family: 'Times New Roman', size: 12 };
+  const doc = {
+    blocks: [
+      H('h1', 'Title'),
+      P([b('Bold'), { text: ' start of body.' }]),
+      P('Second body paragraph keeps the font.'),
+      H('h2', 'Section'),
+      P('https://example.com/x then text.'),
+      T([cell(P('a')), cell(P('b'))]),
+      P('After the table.'),
+    ],
+  };
+  for (let seed = 1; seed <= 30; seed++) {
+    const { actions } = planAll(doc, { seed, typoRate: 0.2, font });
+    const styled = actions.filter((a) => a.type === 'paste' && a.style);
+    assert.deepStrictEqual(styled.map((a) => a.text), ['B', 'https://example.com/x', 'a', 'b', 'A']);
+    assert.deepStrictEqual(styled[0].style, { family: 'Times New Roman', size: 12, bold: true, italic: false, underline: false, strike: false });
+    for (const a of styled) assert.ok(a.delay >= 120);
+    assert.deepStrictEqual(simulateDoc(actions), normalizeDoc(doc));
+  }
+  // Without a font nothing is styled.
+  assert.ok(!planAll(doc, { seed: 1 }).actions.some((a) => a.style));
+});
+
+test('resolveFont keeps sane values only', () => {
+  assert.strictEqual(resolveFont(null), null);
+  assert.strictEqual(resolveFont({ family: '  ', size: 'x' }), null);
+  assert.deepStrictEqual(resolveFont({ family: 'Arial";x', size: 11.3 }), { family: 'Arialx', size: 11.5 });
+  assert.deepStrictEqual(resolveFont({ size: 200 }), null);
+  assert.deepStrictEqual(resolveFont({ family: 'Times New Roman' }), { family: 'Times New Roman' });
 });
