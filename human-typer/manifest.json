@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Human Typer (prototip)",
+  "version": "0.1.0",
+  "description": "Verilen metni Google Docs'a insan benzeri hız, hata ve düzeltmelerle yazar. Ölçüm prototipi.",
+  "minimum_chrome_version": "116",
+  "permissions": [],
+  "host_permissions": [
+    "https://docs.google.com/*",
+    "https://*.googleusercontent.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://docs.google.com/document/*"],
+      "js": ["planner.js", "transport.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
