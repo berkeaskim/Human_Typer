@@ -68,9 +68,16 @@
     DocEnd: IS_MAC ? ['ArrowDown', 'ArrowDown', 40, { metaKey: true }] : ['End', 'End', 35, { ctrlKey: true }],
     ParaEnd: ['ArrowDown', 'ArrowDown', 40, IS_MAC ? { altKey: true } : { ctrlKey: true }],
     SelectPara: ['ArrowUp', 'ArrowUp', 38, IS_MAC ? { altKey: true, shiftKey: true } : { ctrlKey: true, shiftKey: true }],
+    Escape: ['Escape', 'Escape', 27, {}],
   };
   const digit = (d, extra) => [String(d), 'Digit' + d, 48 + d, mod(extra)];
   const letter = (c, extra) => [c, 'Key' + c.toUpperCase(), c.toUpperCase().charCodeAt(0), mod(extra)];
+  // Two-chord shortcuts: ⌘/Ctrl+Alt+O, then ⌘/Ctrl+Alt+H (header) or F
+  // (footer) moves the caret into the page header/footer, creating it.
+  const SEQS = {
+    OpenHeader: [letter('o', { altKey: true }), letter('h', { altKey: true })],
+    OpenFooter: [letter('o', { altKey: true }), letter('f', { altKey: true })],
+  };
   const FORMATS = {
     bold: letter('b'),
     italic: letter('i'),
@@ -110,7 +117,16 @@
   }
 
   function key(name) {
+    if (SEQS[name]) return pressSeq(SEQS[name]);
     return KEYS[name] ? press(KEYS[name]) : false;
+  }
+  async function pressSeq(defs) {
+    for (let i = 0; i < defs.length; i++) {
+      if (i) await sleep(140);
+      if (!press(defs[i])) return false;
+    }
+    await sleep(400); // Docs lays out the new header/footer before typing lands
+    return true;
   }
   const backspace = () => key('Backspace');
 

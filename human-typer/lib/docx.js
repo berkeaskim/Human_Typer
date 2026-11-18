@@ -290,17 +290,25 @@
     }
 
     const runs = [];
+    const pagesBefore = ctx.skipped.pageNumbers;
     ctx.normal = style === 'normal';
     collectRuns(p, base, runs, ctx);
     ctx.normal = false;
-    return { type: 'paragraph', style, list, align: JC[firstVal('w:jc')] || 'left', runs };
+    const out = { type: 'paragraph', style, list, align: JC[firstVal('w:jc')] || 'left', runs };
+    if (ctx.skipped.pageNumbers > pagesBefore) out.pageField = true; // dropped by normalize()
+    return out;
   }
 
   // Hyperlinks become plain text: the underline that marks them as links is
   // dropped, other formatting is kept.
+  // Page-number fields (PAGE, NUMPAGES, ...) are not text: their cached value
+  // ("1") would be typed as a fixed number. Docs inserts real page numbers
+  // only from its menu, so they are skipped and reported.
+  const PAGE_FIELD = /^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b/i;
   function collectRuns(node, base, runs, ctx, inLink) {
     for (const c of node.children) {
       if (c.name === 'w:r') convertRun(c, base, runs, ctx, inLink);
+      else if (c.name === 'w:fldSimple' && PAGE_FIELD.test(c.attrs['w:instr'] || '')) ctx.skipped.pageNumbers++;
       else if (TRANSPARENT.has(c.name)) {
         collectRuns(c, base, runs, ctx, inLink || c.name === 'w:hyperlink');
       }
@@ -313,8 +321,24 @@
     const charStyles = ctx.styles.chain(val(rPr, 'w:rStyle')).map((s) => s.rProps);
     const props = mergeProps(base, ...charStyles.reverse(), runProps(rPr));
     let text = '';
+    // Complex fields: begin, instruction, separate, cached result, end.
+    const hidden = () => ctx.fld && (!ctx.fld.result || ctx.fld.page);
     for (const c of r.children) {
+      if (hidden() && c.name !== 'w:fldChar' && c.name !== 'w:instrText') continue;
       switch (c.name) {
+        case 'w:fldChar': {
+          const t = c.attrs['w:fldCharType'];
+          if (t === 'begin') ctx.fld = { instr: '', result: false, page: false };
+          else if (t === 'separate' && ctx.fld) {
+            ctx.fld.result = true;
+            ctx.fld.page = PAGE_FIELD.test(ctx.fld.instr);
+            if (ctx.fld.page) ctx.skipped.pageNumbers++;
+          } else if (t === 'end') ctx.fld = null;
+          break;
+        }
+        case 'w:instrText':
+          if (ctx.fld) ctx.fld.instr += c.children.map((t) => t.text || '').join('');
+          break;
         case 'w:t':
           text += c.children.map((t) => t.text || '').join('');
           break;
@@ -437,7 +461,8 @@
       [skipped.mergedCells, 'merged cell expanded', 'merged cells expanded'],
     ];
     const out = items.filter(([n]) => n > 0).map(([n, one, many]) => plural(n, one, many));
-    if (skipped.headersFooters) out.push('Headers and footers skipped');
+    if (skipped.pageNumbers) out.push('Page numbers are not typed: add them in Docs with Insert › Page numbers');
+    if (skipped.firstPage) out.push('The different first-page header/footer is skipped; the main one is typed');
     return out;
   }
 
@@ -479,13 +504,49 @@
         symbols: 0,
         nestedTables: 0,
         mergedCells: 0,
-        headersFooters: zip.names.some((n) => /(^|\/)(header|footer)\d*\.xml$/.test(n)),
+        pageNumbers: 0,
+        firstPage: false,
       },
     };
     const blocks = [];
     collectBlocks(body, ctx, blocks);
-    const font = bodyFont(ctx.fonts, readTheme(await readText(dir + 'theme/theme1.xml')));
-    const out = { doc: api.normalize({ blocks }), warnings: buildWarnings(ctx.skipped) };
+
+    // Header and footer of the last section (the one the body ends in; in
+    // practice the whole document). Tables in them are flattened to their
+    // paragraphs. The body font tally only counts body text.
+    const extra = {};
+    const bodyFonts = ctx.fonts;
+    const sect = kid(body, 'w:sectPr');
+    if (sect) {
+      ctx.fonts = null;
+      const relsXml = await readText(dir + '_rels/' + path.slice(dir.length) + '.rels');
+      const rels = new Map(kids(kid(relsXml ? parseXml(relsXml) : null, 'Relationships'), 'Relationship').map((r) => [r.attrs.Id, r.attrs.Target]));
+      for (const [kind, tag, root] of [['header', 'w:headerReference', 'w:hdr'], ['footer', 'w:footerReference', 'w:ftr']]) {
+        const refs = kids(sect, tag);
+        const ref = refs.find((r) => (r.attrs['w:type'] || 'default') === 'default');
+        if (refs.some((r) => r.attrs['w:type'] === 'first') && kid(sect, 'w:titlePg')) ctx.skipped.firstPage = true;
+        const target = ref && rels.get(ref.attrs['r:id']);
+        if (!target) continue;
+        const part = target.startsWith('/') ? target.slice(1) : dir + target;
+        const xml = await readText(part);
+        const top = xml ? kid(parseXml(xml), root) : null;
+        if (!top) continue;
+        const found = [];
+        ctx.fld = null;
+        collectBlocks(top, ctx, found);
+        const paragraphs = [];
+        // "Page 3 of 9" without its numbers is meaningless: a paragraph with a
+        // page-number field is left out whole (the warning says why).
+        for (const b of found) {
+          if (b.type === 'paragraph') paragraphs.push(b);
+          else for (const row of b.rows) for (const cell of row) paragraphs.push(...cell.paragraphs);
+        }
+        for (let i = paragraphs.length - 1; i >= 0; i--) if (paragraphs[i].pageField) paragraphs.splice(i, 1);
+        extra[kind] = { paragraphs };
+      }
+    }
+    const font = bodyFont(bodyFonts, readTheme(await readText(dir + 'theme/theme1.xml')));
+    const out = { doc: api.normalize(Object.assign({ blocks }, extra)), warnings: buildWarnings(ctx.skipped) };
     if (font) out.font = font;
     return out;
   }

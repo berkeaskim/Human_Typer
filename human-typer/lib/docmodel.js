@@ -8,6 +8,8 @@
 //   Run       = { text, bold?: true, italic?: true, underline?: true, strike?: true }
 //   Table     = { type: 'table', rows: Cell[][] }   (rectangular)
 //   Cell      = { paragraphs: Paragraph[] }         (at least one)
+//   Doc.header, Doc.footer = { paragraphs: Paragraph[] }  (optional; present
+//               only when they contain text)
 //
 // Load order: docmodel.js -> zip.js -> docx.js -> markdown.js. Every file adds
 // its functions to the single `globalThis.HumanTyperDoc` object.
@@ -105,7 +107,16 @@
         if (table) blocks.push(table);
       }
     }
-    return { blocks };
+    const out = { blocks };
+    for (const kind of ['header', 'footer']) {
+      const src = doc && doc[kind] && Array.isArray(doc[kind].paragraphs) ? doc[kind].paragraphs : [];
+      const paragraphs = [];
+      for (const p of src) if (p && p.type === 'paragraph') paragraphs.push(...normalizeParagraph(p));
+      // Trailing empty paragraphs are dropped; nothing with text, no section.
+      while (paragraphs.length && !paragraphs[paragraphs.length - 1].runs.length) paragraphs.pop();
+      if (paragraphs.some((p) => p.runs.length)) out[kind] = { paragraphs };
+    }
+    return out;
   }
 
   // --- validate ------------------------------------------------------------

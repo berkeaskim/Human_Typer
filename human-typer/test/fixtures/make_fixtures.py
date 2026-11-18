@@ -179,6 +179,32 @@ FONTS_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
 ]) + '</w:body></w:document>'
 
 
+# Header and footer referenced from the body's sectPr, plus a first-page
+# footer. The footer's "Page N of M" paragraph uses one simple and one
+# complex field and must be left out.
+R_NS = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+FOOTER_DOCUMENT = XML + f'<w:document {W_NS} {R_NS}><w:body>' + p(r('Body text.')) + (
+    '<w:sectPr><w:headerReference w:type="default" r:id="rId1"/>'
+    '<w:footerReference w:type="default" r:id="rId2"/><w:footerReference w:type="first" r:id="rId3"/>'
+    '<w:titlePg/></w:sectPr>'
+) + '</w:body></w:document>'
+FOOTER_RELS = XML + (
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>'
+    '</Relationships>'
+)
+FOOTER_HEADER = XML + f'<w:hdr {W_NS}>' + p(r('ENV 204 · Ayşe Yılmaz'), '<w:jc w:val="right"/>') + '</w:hdr>'
+FOOTER_MAIN = XML + f'<w:ftr {W_NS}>' + p(
+    r('Page ') + '<w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple>' + r(' of ')
+    + '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r>'
+    + '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>9</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>',
+    '<w:jc w:val="center"/>'
+) + p(r('Draft', '<w:i/>') + r(' — not for circulation'), '<w:jc w:val="center"/>') + p('') + '</w:ftr>'
+FOOTER_FIRST = XML + f'<w:ftr {W_NS}>' + p(r('first page only')) + '</w:ftr>'
+
+
 def write_zip(name, parts, compression):
     path = os.path.join(HERE, name)
     with zipfile.ZipFile(path, 'w') as z:
@@ -205,6 +231,13 @@ def main():
         ('word/document.xml', FONTS_DOCUMENT),
         ('word/styles.xml', FONTS_STYLES),
         ('word/theme/theme1.xml', FONTS_THEME),
+    ], zipfile.ZIP_DEFLATED)
+    write_zip('footer.docx', [
+        ('word/document.xml', FOOTER_DOCUMENT),
+        ('word/_rels/document.xml.rels', FOOTER_RELS),
+        ('word/header1.xml', FOOTER_HEADER),
+        ('word/footer1.xml', FOOTER_MAIN),
+        ('word/footer2.xml', FOOTER_FIRST),
     ], zipfile.ZIP_DEFLATED)
     write_zip('no-document.docx', [('hello.txt', 'hello')], zipfile.ZIP_DEFLATED)
 

@@ -2,7 +2,7 @@
 // Run from the extension folder: node --test   (or: node --test test/*.test.js)
 const test = require('node:test');
 const assert = require('node:assert');
-const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS, splitLinks, resolveFont } = require('../planner.js');
+const { planBlock, initialCarry, estimate, targetWpm, detectLayout, simulateDoc, normalizeDoc, FORMAT_OPS, splitLinks, resolveFont, sections, itemCount } = require('../planner.js');
 
 // --- document builders -----------------------------------------------------
 const P = (runs, extra) =>
@@ -420,4 +420,36 @@ test('resolveFont keeps sane values only', () => {
   assert.deepStrictEqual(resolveFont({ family: 'Arial";x', size: 11.3 }), { family: 'Arialx', size: 11.5 });
   assert.deepStrictEqual(resolveFont({ size: 200 }), null);
   assert.deepStrictEqual(resolveFont({ family: 'Times New Roman' }), { family: 'Times New Roman' });
+});
+
+test('header and footer are typed after the body and Escape returns to it', () => {
+  const doc = {
+    blocks: [P([b('Body'), { text: ' text.' }])],
+    header: { paragraphs: [P('ENV 204 · Ayşe', { align: 'right' })] },
+    footer: { paragraphs: [P([i('Draft'), { text: ' only' }], { align: 'center' }), P('Second line'), P('')] },
+  };
+  assert.deepStrictEqual(sections(doc), ['header', 'footer']);
+  assert.strictEqual(itemCount(doc), 3);
+  assert.strictEqual(itemCount({ blocks: [P('x')], footer: { paragraphs: [P('')] } }), 1);
+  for (let seed = 1; seed <= 30; seed++) {
+    const opts = { seed, typoRate: 0.2, font: { family: 'Arial', size: 10 } };
+    const all = [];
+    let carry = initialCarry();
+    for (let k = 0; k < itemCount(doc); k++) {
+      const res = planBlock(doc, k, opts, carry);
+      all.push(...res.actions);
+      carry = res.carry;
+    }
+    const keys = all.filter((a) => a.type === 'key').map((a) => a.key);
+    assert.deepStrictEqual(keys, ['OpenHeader', 'Escape', 'OpenFooter', 'Enter', 'Escape']);
+    // Each section starts plain and gets the body font on its first paragraph.
+    assert.deepStrictEqual(all.filter((a) => a.style).map((a) => a.text), ['B', 'E', 'D']);
+    assert.deepStrictEqual(simulateDoc(all), normalizeDoc(doc));
+    // The body carry survives the sections.
+    assert.strictEqual(carry.bold, false);
+    const est = estimate(doc, opts);
+    assert.strictEqual(est.perBlockMs.length, 3);
+  }
+  assert.throws(() => simulateDoc([{ type: 'key', key: 'Escape', delay: 0 }]));
+  assert.throws(() => simulateDoc([{ type: 'key', key: 'OpenFooter', delay: 0 }]));
 });

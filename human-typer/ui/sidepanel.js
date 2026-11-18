@@ -599,6 +599,8 @@
       parts.push(t('doc.paragraphs', { count: s.paragraphs || 0 }));
       if (s.tables) parts.push(t('doc.tables', { count: s.tables }));
     }
+    if (ui.doc.header) parts.push(t('doc.header'));
+    if (ui.doc.footer) parts.push(t('doc.footer'));
     // One span per figure so a line break never splits "1 table".
     var statsBox = $('fileStats');
     clear(statsBox);

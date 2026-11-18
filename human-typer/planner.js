@@ -14,6 +14,8 @@
 //   { type: 'format', op, delay }          see FORMAT_OPS; 'list:none' also carries
 //                                          kind and level of the list being left
 //   { type: 'table',  rows, cols, delay }  insert an empty table, caret in first cell
+//   key 'OpenHeader' / 'OpenFooter' moves the caret into the (new, empty) page
+//   header / footer; key 'Escape' returns it to the body where it was.
 //   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
 //                                          `style` ({ family?, size?, bold, italic,
 //                                          underline, strike }) it is pasted in that
@@ -108,6 +110,7 @@
     firstBack: 420, // measured
     nextBack: 195, // measured (170–222)
     pasteLink: [2600, 0.35, 1200, 6000], // assumed: switch to the source tab, copy the link, come back, paste
+    sectionOpen: [1800, 0.35, 900, 4000], // assumed: moving into the header/footer
     fontKey: [300, 0.4, 120, 700], // assumed: the styled first character of a paragraph, like a keystroke
 
     // Structural actions. All assumed: there is no published keystroke data
@@ -452,9 +455,29 @@
     }
     return normalizeParagraph(b || {});
   }
+  // Header/footer paragraphs: trailing empty ones dropped; null without text.
+  function normalizeSection(sec) {
+    const ps = (sec && Array.isArray(sec.paragraphs) ? sec.paragraphs : []).map((p) => normalizeParagraph(p || {}));
+    while (ps.length && !ps[ps.length - 1].runs.length) ps.pop();
+    return ps.some((p) => p.runs.length) ? { paragraphs: ps } : null;
+  }
+  const SECTION_KINDS = ['header', 'footer'];
+  // Header and footer are typed after the body, as items blocks.length, ...
+  function sections(doc) {
+    return SECTION_KINDS.filter((k) => normalizeSection(doc && doc[k]));
+  }
+  // Number of items planBlock plans for `doc`: body blocks, then sections.
+  function itemCount(doc) {
+    return ((doc && doc.blocks) || []).length + sections(doc).length;
+  }
   // Canonical form of a Doc; `simulateDoc` returns documents in this form.
   function normalizeDoc(doc) {
-    return { blocks: ((doc && doc.blocks) || []).map(normalizeBlock) };
+    const out = { blocks: ((doc && doc.blocks) || []).map(normalizeBlock) };
+    for (const k of SECTION_KINDS) {
+      const sec = normalizeSection(doc && doc[k]);
+      if (sec) out[k] = sec;
+    }
+    return out;
   }
   function blockParagraphs(block) {
     if (block.type !== 'table') return [block];
@@ -545,9 +568,14 @@
     const L = resolveLayout(o);
     const c = Object.assign(initialCarry(), carry);
     c.list = c.list ? { kind: c.list.kind, level: c.list.level } : null;
-    const raw = doc && doc.blocks && doc.blocks[index];
-    if (!raw) return { actions: [], carry: c };
-    const block = normalizeBlock(raw);
+    const nBlocks = ((doc && doc.blocks) || []).length;
+    let block;
+    if (index < nBlocks) block = normalizeBlock(doc.blocks[index]);
+    else {
+      const kind = sections(doc)[index - nBlocks];
+      if (!kind) return { actions: [], carry: c };
+      block = Object.assign({ type: 'section', kind }, normalizeSection(doc[kind]));
+    }
 
     const prof = makeProfile(rng32(o.seed));
     const r = rng32(mixSeed(o.seed, index));
@@ -702,7 +730,17 @@
       return true;
     }
 
-    if (block.type === 'table') {
+    if (block.type === 'section') {
+      // The caret goes into the empty header/footer, which starts plain;
+      // Escape brings it back to the body, whose formatting state is kept.
+      const body = Object.assign({}, c);
+      Object.assign(c, { style: 'normal', list: null, align: 'left', bold: false, italic: false, underline: false, strike: false, fontSet: false });
+      pendingPause = (c.started ? think(P.paragraphPause) : 0) + rest;
+      key(block.kind === 'header' ? 'OpenHeader' : 'OpenFooter', P.sectionOpen);
+      block.paragraphs.forEach((p, j) => paragraph(p, j > 0, j > 0 ? think(P.cellParagraphPause) : 0));
+      key('Escape', P.cellMove);
+      Object.assign(c, body);
+    } else if (block.type === 'table') {
       if (table(block)) c.afterTable = true;
     } else {
       const needEnter = c.started && !c.afterTable;
@@ -733,7 +771,7 @@
   // Plans the whole document to estimate its duration.
   // chars = characters of document text, keys = number of actions.
   function estimate(doc, opts) {
-    const n = doc && doc.blocks ? doc.blocks.length : 0;
+    const n = itemCount(doc);
     const perBlockMs = [];
     let carry = initialCarry();
     let ms = 0;
@@ -749,6 +787,9 @@
     let chars = 0;
     for (const b of (doc && doc.blocks) || []) {
       for (const p of blockParagraphs(normalizeBlock(b))) for (const run of p.runs) chars += Array.from(run.text).length;
+    }
+    for (const k of sections(doc)) {
+      for (const p of normalizeSection(doc[k]).paragraphs) for (const run of p.runs) chars += Array.from(run.text).length;
     }
     return { ms, chars, keys, perBlockMs };
   }
@@ -774,6 +815,8 @@
     let par = blocks[0];
     let tbl = null; // { rows, r, c } while the caret is inside a table
     let bits = 0; // inline formats pending at the caret
+    const secs = {}; // header/footer paragraphs, once opened
+    let inSec = null; // { kind, pars, par, bits } of the body while in a section
     const fail = (msg, i) => {
       throw new Error(`simulateDoc: ${msg} (action ${i})`);
     };
@@ -797,6 +840,19 @@
       } else if (a.type === 'back') {
         if (!par.chars.length) fail('Backspace at the start of a paragraph', i);
         par.chars.pop();
+      } else if (a.type === 'key' && (a.key === 'OpenHeader' || a.key === 'OpenFooter')) {
+        const kind = a.key === 'OpenHeader' ? 'header' : 'footer';
+        if (tbl || inSec) fail(a.key + ' inside a table or section', i);
+        if (secs[kind]) fail(kind + ' opened twice', i);
+        inSec = { pars, par, bits };
+        secs[kind] = [newPar('normal', null, 'left')];
+        pars = secs[kind];
+        par = pars[0];
+        bits = 0;
+      } else if (a.type === 'key' && a.key === 'Escape') {
+        if (!inSec) fail('Escape outside a header/footer', i);
+        ({ pars, par, bits } = inSec);
+        inSec = null;
       } else if (a.type === 'key' && a.key === 'Enter') {
         par.implicit = false;
         par = newPar('normal', par.list && { kind: par.list.kind, level: par.list.level }, par.align);
@@ -836,6 +892,7 @@
         else par.list.level = clamp(par.list.level + (name === 'indent' ? 1 : -1), 0, 8);
       } else if (a.type === 'table') {
         if (tbl) fail('nested table', i);
+        if (inSec) fail('table in a header/footer', i);
         if (par.chars.length) fail('table inserted in a non-empty paragraph', i);
         const rows = Array.from({ length: a.rows }, () => Array.from({ length: a.cols }, () => [newPar('normal', null, 'left')]));
         blocks[blocks.length - 1] = { table: rows }; // replaces the empty paragraph
@@ -846,6 +903,7 @@
       }
     });
 
+    if (inSec) fail('still inside a header/footer at the end', actions.length);
     const last = blocks[blocks.length - 1];
     if (last && !last.table && last.implicit) blocks.pop();
 
@@ -859,11 +917,16 @@
       }
       return { type: 'paragraph', style: p.style, list: p.list, align: p.align, runs };
     };
-    return {
+    const result = {
       blocks: blocks.map((b) =>
         b.table ? { type: 'table', rows: b.table.map((row) => row.map((cell) => ({ paragraphs: cell.map(toParagraph) }))) } : toParagraph(b)
       ),
     };
+    for (const k of SECTION_KINDS) {
+      const sec = secs[k] && normalizeSection({ paragraphs: secs[k].map(toParagraph) });
+      if (sec) result[k] = sec;
+    }
+    return result;
   }
 
   const api = {
@@ -881,6 +944,8 @@
     normalizeDoc,
     splitLinks,
     resolveFont,
+    sections,
+    itemCount,
   };
   root.HumanTyperPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

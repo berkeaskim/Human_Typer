@@ -161,7 +161,7 @@ async function createJob(msg) {
   if (!filled) {
     const est = Planner.estimate(source, plannerOpts(job));
     job.kind = 'compose';
-    job.total = source.blocks.length;
+    job.total = Planner.itemCount(source); // body blocks, then header/footer
     job.charsDone = 0;
     job.charsTotal = est.chars;
     job.itemMs = est.perBlockMs;
@@ -282,7 +282,12 @@ const navKeys = (key, n, delay) => Array.from({ length: n }, () => ({ type: 'key
 async function buildCompose(job, fresh) {
   const doc = await get(K.doc);
   const planned = Planner.planBlock(doc, job.item, plannerOpts(job), job.carry);
-  if (fresh && job.actionIndex > 0 && doc.blocks[job.item].type === 'table') throw new Error('resume_inside_table');
+  if (fresh && job.actionIndex > 0) {
+    // Header/footer and tables are entered once at their start; a restart in
+    // the middle would type into the wrong place.
+    if (job.item >= doc.blocks.length) throw new Error('resume_inside_section');
+    if (doc.blocks[job.item].type === 'table') throw new Error('resume_inside_table');
+  }
   return { pre: fresh ? [{ type: 'key', key: 'DocEnd', delay: 800 }] : [], actions: planned.actions, carry: planned.carry };
 }
 

@@ -147,8 +147,9 @@ test('images, text boxes, footnotes and comments are skipped with warnings', () 
     '1 comment skipped',
     '1 nested table flattened to text',
     '2 merged cells expanded',
-    'Headers and footers skipped',
   ]);
+  // header1.xml exists but no section refers to it.
+  assert.strictEqual(sample.doc.header, undefined);
 });
 
 test('tracked deletions are dropped and insertions kept', () => {
@@ -216,4 +217,19 @@ test('body font and size come from the bulk of the body text', async () => {
   // Files that never name a font or size report none.
   assert.strictEqual((await HT.parseDocx(fixture('minimal.docx'))).font, undefined);
   assert.strictEqual((await HT.parseDocx(fixture('sample-deflate.docx'))).font, undefined);
+});
+
+test('header and footer of the last section; page-number paragraphs are left out', async () => {
+  const { doc, warnings } = await HT.parseDocx(fixture('footer.docx'));
+  assert.deepStrictEqual(doc.header, {
+    paragraphs: [{ type: 'paragraph', style: 'normal', list: null, align: 'right', runs: [{ text: 'ENV 204 · Ayşe Yılmaz' }] }],
+  });
+  assert.deepStrictEqual(doc.footer, {
+    paragraphs: [{ type: 'paragraph', style: 'normal', list: null, align: 'center', runs: [{ text: 'Draft', italic: true }, { text: ' — not for circulation' }] }],
+  });
+  assert.deepStrictEqual(HT.toPlainText(doc), 'Body text.');
+  assert.deepStrictEqual(warnings, [
+    'Page numbers are not typed: add them in Docs with Insert › Page numbers',
+    'The different first-page header/footer is skipped; the main one is typed',
+  ]);
 });
