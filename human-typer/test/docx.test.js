@@ -228,8 +228,9 @@ test('header and footer of the last section; page-number paragraphs are left out
     paragraphs: [{ type: 'paragraph', style: 'normal', list: null, align: 'center', runs: [{ text: 'Draft', italic: true }, { text: ' — not for circulation' }] }],
   });
   assert.deepStrictEqual(HT.toPlainText(doc), 'Body text.');
+  assert.deepStrictEqual(doc.pageNumbers, { where: 'footer', skipFirst: true });
   assert.deepStrictEqual(warnings, [
-    'Page numbers are not typed: add them in Docs with Insert › Page numbers',
+    'Page numbers are added with Docs’ page-number tool; other text on that line (e.g. “Page … of …”) is left out',
     'The different first-page header/footer is skipped; the main one is typed',
   ]);
 });

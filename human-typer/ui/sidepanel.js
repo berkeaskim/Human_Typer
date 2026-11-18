@@ -136,6 +136,7 @@
     pasteOpen: false,
     typo: 2,             // percent
     layout: 'auto',
+    speed: 'normal',     // 'slow' | 'normal' | 'fast'
     fontFamily: '',      // body font for normal text; '' keeps the Docs default
     fontSize: '',        // points, as typed; '' keeps the Docs default
     fontFromFile: '',    // file the font fields were filled from
@@ -167,7 +168,7 @@
   function saveSettings() {
     I.storageSet(SETTINGS_KEY, {
       typo: ui.typo, layout: ui.layout, mode: ui.mode,
-      fontFamily: ui.fontFamily, fontSize: ui.fontSize,
+      fontFamily: ui.fontFamily, fontSize: ui.fontSize, speed: ui.speed,
       hoursStart: ui.hoursStart, hoursEnd: ui.hoursEnd, days: ui.days
     });
   }
@@ -176,6 +177,7 @@
     if (!s || typeof s !== 'object') return;
     if (typeof s.typo === 'number' && s.typo >= 0 && s.typo <= 8) ui.typo = s.typo;
     if (['auto', 'trq', 'qwerty'].indexOf(s.layout) >= 0) ui.layout = s.layout;
+    if (['slow', 'normal', 'fast'].indexOf(s.speed) >= 0) ui.speed = s.speed;
     if (typeof s.fontFamily === 'string') ui.fontFamily = s.fontFamily.slice(0, 60);
     if (typeof s.fontSize === 'string' || typeof s.fontSize === 'number') ui.fontSize = String(s.fontSize).slice(0, 5);
     if (s.mode === 'now' || s.mode === 'deadline') ui.mode = s.mode;
@@ -333,7 +335,7 @@
   }
 
   function typingOptions() {
-    var o = { typoRate: ui.typo / 100, layout: resolvedLayout() };
+    var o = { typoRate: ui.typo / 100, layout: resolvedLayout(), speed: ui.speed };
     var font = Planner.resolveFont ? Planner.resolveFont({ family: ui.fontFamily, size: ui.fontSize }) : null;
     if (font) o.font = font;
     return o;
@@ -346,7 +348,7 @@
     try {
       if (Planner.estimate) {
         var o = typingOptions();
-        ui.estimate = Planner.estimate(ui.doc, { typoRate: o.typoRate, seed: ui.seed, layout: o.layout });
+        ui.estimate = Planner.estimate(ui.doc, { typoRate: o.typoRate, seed: ui.seed, layout: o.layout, font: o.font, speed: o.speed });
       }
     } catch (e) { ui.estimate = null; }
     recomputePlan();
@@ -646,6 +648,11 @@
     } else {
       est.textContent = t('style.estimateNone');
     }
+
+    $('speedSlow').checked = ui.speed === 'slow';
+    $('speedNormal').checked = ui.speed === 'normal';
+    $('speedFast').checked = ui.speed === 'fast';
+    $('paceHint').textContent = t('style.paceHint.' + ui.speed);
 
     $('typo').value = String(ui.typo);
     $('typoValue').textContent = I.fmtPercent(ui.typo / 100, 1);
@@ -1159,6 +1166,15 @@
       recompute();
       saveSettings();
       render();
+    });
+    ['speedSlow', 'speedNormal', 'speedFast'].forEach(function (id) {
+      $(id).addEventListener('change', function () {
+        if (!$(id).checked) return;
+        ui.speed = $(id).value;
+        recompute();
+        saveSettings();
+        render();
+      });
     });
     function onFont() {
       ui.fontFamily = $('fontFamily').value.trim();

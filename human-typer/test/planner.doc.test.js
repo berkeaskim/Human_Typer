@@ -453,3 +453,40 @@ test('header and footer are typed after the body and Escape returns to it', () =
   assert.throws(() => simulateDoc([{ type: 'key', key: 'Escape', delay: 0 }]));
   assert.throws(() => simulateDoc([{ type: 'key', key: 'OpenFooter', delay: 0 }]));
 });
+
+test('page numbers come last, through the page-number tool, then Escape', () => {
+  const doc = { blocks: [P('Body')], footer: { paragraphs: [P('Draft')] }, pageNumbers: { where: 'footer', skipFirst: true } };
+  assert.deepStrictEqual(sections(doc), ['footer', 'pageNumbers']);
+  const { actions } = planAll(Object.assign({}, doc, { blocks: doc.blocks }), { seed: 3 });
+  // planAll only walks body blocks; plan every item here.
+  const all = [];
+  let carry = initialCarry();
+  for (let k = 0; k < itemCount(doc); k++) {
+    const res = planBlock(doc, k, { seed: 3 }, carry);
+    all.push(...res.actions);
+    carry = res.carry;
+  }
+  assert.ok(actions.length > 0);
+  const tail = all.slice(-2);
+  assert.deepStrictEqual([tail[0].type, tail[0].where, tail[0].skipFirst, tail[1].key], ['pageNumbers', 'footer', true, 'Escape']);
+  assert.ok(tail[0].delay >= 2000);
+  assert.deepStrictEqual(simulateDoc(all), normalizeDoc(doc));
+});
+
+test('a table after a paragraph is marked to remove the empty paragraph above it', () => {
+  const doc = { blocks: [P('x'), T([cell(P('a'))]), T([cell(P('b'))])] };
+  const tables = planAll(doc, { seed: 1 }).actions.filter((a) => a.type === 'table');
+  assert.deepStrictEqual(tables.map((t) => Boolean(t.join)), [true, false]);
+  assert.ok(!planAll({ blocks: [T([cell(P('a'))])] }, { seed: 1 }).actions.find((a) => a.type === 'table').join);
+});
+
+test('speed presets order the base pace slow < normal < fast', () => {
+  const avg = (speed) => {
+    let s = 0;
+    for (let seed = 1; seed <= 200; seed++) s += targetWpm({ seed, speed }, 0);
+    return s / 200;
+  };
+  const [slow, normal, fast] = ['slow', 'normal', 'fast'].map(avg);
+  assert.ok(slow > 33 && slow < 48 && normal > 52 && normal < 72 && fast > 75 && fast < 102, `${slow} ${normal} ${fast}`);
+  assert.strictEqual(targetWpm({ seed: 1, speed: 'nonsense' }, 0), targetWpm({ seed: 1 }, 0));
+});

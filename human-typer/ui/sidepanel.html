@@ -108,13 +108,20 @@
           <h2 class="sec__title" id="styleTitle" data-i18n="style.title"></h2>
         </div>
 
-        <!-- Pace is not a setting: the planner picks and varies it. -->
+        <!-- The writer's base speed; the planner still varies it like a person. -->
         <div class="field pace">
           <div class="field__top">
-            <span class="field__label" data-i18n="style.pace"></span>
-            <span class="field__value" data-i18n="style.paceValue"></span>
+            <span class="field__label" id="paceLabel" data-i18n="style.pace"></span>
           </div>
-          <p class="hint" data-i18n="style.paceHint"></p>
+          <div class="seg seg--3" role="radiogroup" aria-labelledby="paceLabel">
+            <input type="radio" name="speed" id="speedSlow" value="slow" class="seg__input">
+            <label for="speedSlow" class="seg__label" data-i18n="style.speed.slow"></label>
+            <input type="radio" name="speed" id="speedNormal" value="normal" class="seg__input" checked>
+            <label for="speedNormal" class="seg__label" data-i18n="style.speed.normal"></label>
+            <input type="radio" name="speed" id="speedFast" value="fast" class="seg__input">
+            <label for="speedFast" class="seg__label" data-i18n="style.speed.fast"></label>
+          </div>
+          <p class="hint" id="paceHint"></p>
           <p class="pace__estimate" id="estimate" aria-live="polite"></p>
         </div>
 

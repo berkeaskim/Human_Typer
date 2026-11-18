@@ -64,6 +64,9 @@
     ArrowLeft: ['ArrowLeft', 'ArrowLeft', 37, {}],
     ArrowRight: ['ArrowRight', 'ArrowRight', 39, {}],
     ArrowDown: ['ArrowDown', 'ArrowDown', 40, {}],
+    ArrowUp: ['ArrowUp', 'ArrowUp', 38, {}],
+    End: ['End', 'End', 35, {}],
+    Delete: ['Delete', 'Delete', 46, {}],
     DocStart: IS_MAC ? ['ArrowUp', 'ArrowUp', 38, { metaKey: true }] : ['Home', 'Home', 36, { ctrlKey: true }],
     DocEnd: IS_MAC ? ['ArrowDown', 'ArrowDown', 40, { metaKey: true }] : ['End', 'End', 35, { ctrlKey: true }],
     ParaEnd: ['ArrowDown', 'ArrowDown', 40, IS_MAC ? { altKey: true } : { ctrlKey: true }],
@@ -72,11 +75,14 @@
   };
   const digit = (d, extra) => [String(d), 'Digit' + d, 48 + d, mod(extra)];
   const letter = (c, extra) => [c, 'Key' + c.toUpperCase(), c.toUpperCase().charCodeAt(0), mod(extra)];
-  // Two-chord shortcuts: ⌘/Ctrl+Alt+O, then ⌘/Ctrl+Alt+H (header) or F
-  // (footer) moves the caret into the page header/footer, creating it.
+  // Two-chord shortcuts that move the caret into the page header/footer,
+  // creating it. Verified on macOS (Docs menu: Ctrl+⌘O Ctrl+⌘H / Ctrl+⌘F;
+  // ⌘⌥F would insert a footnote instead). Elsewhere Ctrl+Alt+O, Ctrl+Alt+H/F.
+  const SEC_MODS = IS_MAC ? { metaKey: true, ctrlKey: true } : { ctrlKey: true, altKey: true };
+  const chord = (c) => [c, 'Key' + c.toUpperCase(), c.toUpperCase().charCodeAt(0), SEC_MODS];
   const SEQS = {
-    OpenHeader: [letter('o', { altKey: true }), letter('h', { altKey: true })],
-    OpenFooter: [letter('o', { altKey: true }), letter('f', { altKey: true })],
+    OpenHeader: [chord('o'), chord('h')],
+    OpenFooter: [chord('o'), chord('f')],
   };
   const FORMATS = {
     bold: letter('b'),
@@ -151,7 +157,13 @@
     );
   }
 
-  async function insertTable(rows, cols) {
+  // `join`: the table was pasted into an empty paragraph made for it (Enter
+  // after the previous paragraph). Docs keeps that empty paragraph above the
+  // table; it is removed by deleting forward from the end of the paragraph
+  // before it, then the caret steps back into the first cell. (Pasting at the
+  // end of the previous paragraph instead would give the cells and the
+  // paragraph after the table that paragraph's alignment and list.)
+  async function insertTable(rows, cols, join) {
     const t = target();
     if (!t) return false;
     const before = caret();
@@ -171,7 +183,61 @@
       key('ShiftTab');
       await sleep(60);
     }
+    if (join) {
+      for (const k of ['ArrowUp', 'ArrowUp', 'End', 'Delete', 'ArrowRight']) {
+        await sleep(110);
+        key(k);
+      }
+      await sleep(150);
+    }
     return true;
+  }
+
+  // --- page numbers ---------------------------------------------------------
+  // Docs has no shortcut for page numbers: Insert › Page elements › Page
+  // numbers, then one of four tiles. Everything is found by icon/tile class,
+  // so it works whatever the UI language. Afterwards the caret is in the
+  // header/footer next to the number (the planner sends Escape next).
+  const visible = (el) => el && el.getBoundingClientRect().width > 0;
+  async function waitFor(sel, ms) {
+    for (let t = 0; t < ms; t += 100) {
+      const el = [...document.querySelectorAll(sel)].find(visible);
+      if (el) return el;
+      await sleep(100);
+    }
+    return null;
+  }
+  function mouse(el, types) {
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, view: window, button: 0, clientX: r.left + Math.min(20, r.width / 2), clientY: r.top + r.height / 2 };
+    for (const t of types) el.dispatchEvent(new MouseEvent(t, o));
+  }
+  const HOVER = ['mouseover', 'mouseenter', 'mousemove'];
+  const CLICK = ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'];
+  async function insertPageNumbers(where, skipFirst) {
+    const menu = document.getElementById('docs-insert-menu');
+    if (!menu) return false;
+    mouse(menu, CLICK);
+    const steps = ['.goog-menu .docs-icon-editors-ia-header-footer', '.goog-menu .docs-icon-editors-ia-number-sign'];
+    for (const sel of steps) {
+      const icon = await waitFor(sel, 3000);
+      if (!icon) return closeMenus();
+      mouse(icon.closest('.goog-menuitem'), HOVER);
+    }
+    const tile = await waitFor('.kix-pagenumber-' + (where === 'header' ? 'header' : 'footer') + '-one-on-' + (skipFirst ? 'second' : 'first'), 3000);
+    if (!tile) return closeMenus();
+    const cell = tile.closest('td') || tile;
+    mouse(cell, HOVER);
+    await sleep(250);
+    mouse(cell, CLICK);
+    await sleep(900);
+    return true;
+  }
+  async function closeMenus() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    await sleep(200);
+    focus();
+    return false;
   }
 
   // --- links and the body font ----------------------------------------------
@@ -214,7 +280,9 @@
       case 'format':
         return format(action);
       case 'table':
-        return insertTable(action.rows, action.cols);
+        return insertTable(action.rows, action.cols, action.join);
+      case 'pageNumbers':
+        return insertPageNumbers(action.where, action.skipFirst);
       case 'paste':
         return pasteText(action.text, action.style);
       default:
@@ -238,5 +306,5 @@
     return { x: Math.round(r.left), y: Math.round(r.top) };
   }
 
-  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, pasteText, focus, caret, isMac: IS_MAC };
+  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, insertPageNumbers, pasteText, focus, caret, isMac: IS_MAC };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

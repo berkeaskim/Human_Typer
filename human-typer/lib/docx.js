@@ -461,7 +461,7 @@
       [skipped.mergedCells, 'merged cell expanded', 'merged cells expanded'],
     ];
     const out = items.filter(([n]) => n > 0).map(([n, one, many]) => plural(n, one, many));
-    if (skipped.pageNumbers) out.push('Page numbers are not typed: add them in Docs with Insert › Page numbers');
+    if (skipped.pageText) out.push('Page numbers are added with Docs’ page-number tool; other text on that line (e.g. “Page … of …”) is left out');
     if (skipped.firstPage) out.push('The different first-page header/footer is skipped; the main one is typed');
     return out;
   }
@@ -505,6 +505,7 @@
         nestedTables: 0,
         mergedCells: 0,
         pageNumbers: 0,
+        pageText: false,
         firstPage: false,
       },
     };
@@ -541,7 +542,14 @@
           if (b.type === 'paragraph') paragraphs.push(b);
           else for (const row of b.rows) for (const cell of row) paragraphs.push(...cell.paragraphs);
         }
-        for (let i = paragraphs.length - 1; i >= 0; i--) if (paragraphs[i].pageField) paragraphs.splice(i, 1);
+        for (let i = paragraphs.length - 1; i >= 0; i--) {
+          if (!paragraphs[i].pageField) continue;
+          // Inserted with Docs' own page-number tool; a footer number wins
+          // over a header one. Other text on that line cannot follow it.
+          if (!extra.pageNumbers || kind === 'footer') extra.pageNumbers = { where: kind, skipFirst: Boolean(kid(sect, 'w:titlePg')) };
+          if (paragraphs[i].runs.some((r) => /\S/.test(r.text))) ctx.skipped.pageText = true;
+          paragraphs.splice(i, 1);
+        }
         extra[kind] = { paragraphs };
       }
     }

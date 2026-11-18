@@ -14,6 +14,8 @@
 //   { type: 'format', op, delay }          see FORMAT_OPS; 'list:none' also carries
 //                                          kind and level of the list being left
 //   { type: 'table',  rows, cols, delay }  insert an empty table, caret in first cell
+//   { type: 'pageNumbers', where, skipFirst, delay }  Docs' page-number tool:
+//                                          caret ends in that header/footer
 //   key 'OpenHeader' / 'OpenFooter' moves the caret into the (new, empty) page
 //   header / footer; key 'Escape' returns it to the body where it was.
 //   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
@@ -111,6 +113,7 @@
     nextBack: 195, // measured (170–222)
     pasteLink: [2600, 0.35, 1200, 6000], // assumed: switch to the source tab, copy the link, come back, paste
     sectionOpen: [1800, 0.35, 900, 4000], // assumed: moving into the header/footer
+    menuTrip: [3200, 0.3, 2000, 6000], // assumed: Insert › Page elements › Page numbers
     fontKey: [300, 0.4, 120, 700], // assumed: the styled first character of a paragraph, like a keystroke
 
     // Structural actions. All assumed: there is no published keystroke data
@@ -126,6 +129,12 @@
     // Automatic speed (no opts.wpm). The ~52 wpm mean is measured (Dhakal
     // 2018); the spread kept here and the drift over the document are assumed.
     autoWpm: [52, 0.13, 40, 68], // base speed of the document's writer
+    // opts.speed presets for the base speed (assumed; same drift on top).
+    speeds: {
+      slow: [40, 0.1, 33, 48],
+      normal: [62, 0.1, 52, 72],
+      fast: [88, 0.1, 75, 102],
+    },
     autoDrift: [0.75, 1.3], // per-block factor on the base speed
     restProb: 0.06, // assumed: share of blocks that start with a longer rest
     restMs: [5000, 25000], // assumed
@@ -324,7 +333,7 @@
     const o = opts || {};
     if (typeof o.wpm === 'number' && isFinite(o.wpm)) return o.wpm;
     const seed = o.seed === undefined ? DEFAULTS.seed : o.seed;
-    const [mean, sigma, lo, hi] = P.autoWpm;
+    const [mean, sigma, lo, hi] = P.speeds[o.speed] || P.autoWpm;
     const base = clamp(logn(rng32(mixSeed(seed, -3)), mean, sigma), lo, hi);
     // Two octaves: a slow swell over ~8 blocks and a quicker ripple on top.
     const v = 0.7 * valueNoise(mixSeed(seed, -4), index / 8) + 0.3 * valueNoise(mixSeed(seed, -5), index / 4);
@@ -462,9 +471,17 @@
     return ps.some((p) => p.runs.length) ? { paragraphs: ps } : null;
   }
   const SECTION_KINDS = ['header', 'footer'];
-  // Header and footer are typed after the body, as items blocks.length, ...
+  // Doc.pageNumbers = { where: 'header' | 'footer', skipFirst } or absent.
+  function normalizePageNumbers(pn) {
+    if (!pn || typeof pn !== 'object') return null;
+    return { where: pn.where === 'header' ? 'header' : 'footer', skipFirst: Boolean(pn.skipFirst) };
+  }
+  // After the body come the header and footer, then the page numbers, as
+  // items blocks.length, blocks.length + 1, ...
   function sections(doc) {
-    return SECTION_KINDS.filter((k) => normalizeSection(doc && doc[k]));
+    const out = SECTION_KINDS.filter((k) => normalizeSection(doc && doc[k]));
+    if (normalizePageNumbers(doc && doc.pageNumbers)) out.push('pageNumbers');
+    return out;
   }
   // Number of items planBlock plans for `doc`: body blocks, then sections.
   function itemCount(doc) {
@@ -477,6 +494,8 @@
       const sec = normalizeSection(doc && doc[k]);
       if (sec) out[k] = sec;
     }
+    const pn = normalizePageNumbers(doc && doc.pageNumbers);
+    if (pn) out.pageNumbers = pn;
     return out;
   }
   function blockParagraphs(block) {
@@ -574,7 +593,9 @@
     else {
       const kind = sections(doc)[index - nBlocks];
       if (!kind) return { actions: [], carry: c };
-      block = Object.assign({ type: 'section', kind }, normalizeSection(doc[kind]));
+      block = kind === 'pageNumbers'
+        ? Object.assign({ type: 'pageNumbers' }, normalizePageNumbers(doc.pageNumbers))
+        : Object.assign({ type: 'section', kind }, normalizeSection(doc[kind]));
     }
 
     const prof = makeProfile(rng32(o.seed));
@@ -696,7 +717,8 @@
     function table(t) {
       const cols = t.rows.length ? t.rows[0].length : 0;
       if (!cols) return false;
-      if (c.started && !c.afterTable) enter();
+      const join = c.started && !c.afterTable;
+      if (join) enter();
       pendingPause = rest;
       if (c.list) leaveList();
       if (c.style !== 'normal') format('style:normal');
@@ -707,7 +729,9 @@
       // the caret the destination cell's own text style, the result is still
       // right because every cell was created plain.
       setInline(0);
-      push({ type: 'table', rows: t.rows.length, cols, delay: human(P.tableInsert) });
+      const ins = { type: 'table', rows: t.rows.length, cols, delay: human(P.tableInsert) };
+      if (join) ins.join = true; // the empty paragraph made by Enter is removed again
+      push(ins);
       c.fontSet = false;
       const cellStart = () => Object.assign(c, { style: 'normal', list: null, align: 'left' });
       cellStart();
@@ -730,7 +754,11 @@
       return true;
     }
 
-    if (block.type === 'section') {
+    if (block.type === 'pageNumbers') {
+      pendingPause = (c.started ? think(P.paragraphPause) : 0) + rest;
+      push({ type: 'pageNumbers', where: block.where, skipFirst: block.skipFirst, delay: human(P.menuTrip) });
+      key('Escape', P.cellMove);
+    } else if (block.type === 'section') {
       // The caret goes into the empty header/footer, which starts plain;
       // Escape brings it back to the body, whose formatting state is kept.
       const body = Object.assign({}, c);
@@ -789,6 +817,7 @@
       for (const p of blockParagraphs(normalizeBlock(b))) for (const run of p.runs) chars += Array.from(run.text).length;
     }
     for (const k of sections(doc)) {
+      if (k === 'pageNumbers') continue;
       for (const p of normalizeSection(doc[k]).paragraphs) for (const run of p.runs) chars += Array.from(run.text).length;
     }
     return { ms, chars, keys, perBlockMs };
@@ -849,6 +878,13 @@
         pars = secs[kind];
         par = pars[0];
         bits = 0;
+      } else if (a.type === 'pageNumbers') {
+        if (tbl || inSec) fail('pageNumbers inside a table or section', i);
+        if (secs.pageNumbers) fail('page numbers inserted twice', i);
+        secs.pageNumbers = normalizePageNumbers(a);
+        inSec = { pars, par, bits };
+        pars = [newPar('normal', null, 'left')]; // the number's own paragraph, not modelled
+        par = pars[0];
       } else if (a.type === 'key' && a.key === 'Escape') {
         if (!inSec) fail('Escape outside a header/footer', i);
         ({ pars, par, bits } = inSec);
@@ -926,6 +962,7 @@
       const sec = secs[k] && normalizeSection({ paragraphs: secs[k].map(toParagraph) });
       if (sec) result[k] = sec;
     }
+    if (secs.pageNumbers) result.pageNumbers = secs.pageNumbers;
     return result;
   }
 
@@ -944,6 +981,7 @@
     normalizeDoc,
     splitLinks,
     resolveFont,
+    SPEEDS: Object.keys(P.speeds),
     sections,
     itemCount,
   };

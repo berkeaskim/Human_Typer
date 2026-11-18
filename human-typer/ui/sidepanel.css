@@ -657,6 +657,10 @@ label.field__label:not(.field__top *), legend.field__label { margin-bottom: 6px;
   transition: transform var(--t) var(--spring-soft);
 }
 .seg:has(#modeDeadline:checked)::before { transform: translateX(100%); }
+.seg--3 { grid-template-columns: 1fr 1fr 1fr; margin-bottom: 8px; }
+.seg--3::before { width: calc((100% - 4px) / 3); }
+.seg--3:has(#speedNormal:checked)::before { transform: translateX(100%); }
+.seg--3:has(#speedFast:checked)::before { transform: translateX(200%); }
 .seg__input { position: absolute; opacity: 0; pointer-events: none; }
 .seg__label {
   position: relative;

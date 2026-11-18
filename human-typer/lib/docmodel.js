@@ -10,6 +10,7 @@
 //   Cell      = { paragraphs: Paragraph[] }         (at least one)
 //   Doc.header, Doc.footer = { paragraphs: Paragraph[] }  (optional; present
 //               only when they contain text)
+//   Doc.pageNumbers = { where: 'header' | 'footer', skipFirst }  (optional)
 //
 // Load order: docmodel.js -> zip.js -> docx.js -> markdown.js. Every file adds
 // its functions to the single `globalThis.HumanTyperDoc` object.
@@ -116,6 +117,8 @@
       while (paragraphs.length && !paragraphs[paragraphs.length - 1].runs.length) paragraphs.pop();
       if (paragraphs.some((p) => p.runs.length)) out[kind] = { paragraphs };
     }
+    const pn = doc && doc.pageNumbers;
+    if (pn && typeof pn === 'object') out.pageNumbers = { where: pn.where === 'header' ? 'header' : 'footer', skipFirst: Boolean(pn.skipFirst) };
     return out;
   }
 

@@ -88,7 +88,8 @@ Everything is plain JavaScript with no build step and no dependencies.
 - Images, footnotes, comments and text boxes are skipped, with a warning when the file is loaded.
 - Links are pasted one at a time as plain text rather than typed out.
 - The body font and size (read from the .docx, or set in the panel) are applied to normal paragraphs, lists and table cells; headings keep their Docs style.
-- The main header and footer are typed after the body. Page numbers are not: add them in Docs with Insert › Page numbers. A different first-page header/footer is skipped.
+- The main header and footer are typed after the body, then page numbers are added with Docs' own page-number tool (only the number: other text on that line, such as "Page … of …", is left out). A different first-page header/footer is skipped.
+- Pace has three presets (slow ≈ 40, normal ≈ 60, fast ≈ 90 words per minute on average), each varied like a person.
 - Docs has no keyboard shortcut for the Title and Subtitle styles. Title is typed as Heading 1 and Subtitle as normal text.
 - In template fill, typed text takes on the formatting already at that spot in the template. Text cannot be deleted, and a filled table with a different shape from the template is only filled where the two overlap.
 - Paragraph navigation shortcuts were verified on macOS. The Windows, Linux and ChromeOS mappings follow the Docs shortcut list and have had less testing.
