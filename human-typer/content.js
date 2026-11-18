@@ -56,7 +56,7 @@
   const box = h(
     'div',
     { className: 'box' },
-    h('div', { className: 'head' }, 'Human Typer', h('button', { textContent: '–', onclick: () => box.classList.toggle('min') })),
+    h('div', { className: 'head' }, 'Human Typer 0.2', h('button', { textContent: '–', onclick: () => box.classList.toggle('min') })),
     h(
       'div',
       { className: 'body' },

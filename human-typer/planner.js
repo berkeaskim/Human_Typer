@@ -56,6 +56,12 @@
     hesitateMean: 700, // varsayım (Baaijen 2012 orta bileşen ~735 ms)
     sentencePause: 900, // varsayım
     paragraphPause: 2000, // varsayım
+    inWord: 0.92, // varsayım
+    repeat: 0.86, // ölçüm: tekrar 176 ms, tek el ~204–215 ms
+    burstPause: 1100, // varsayım (soluk başına 5–12 kelime ikincil kaynak)
+    thinkPause: 1500, // varsayım
+    distractProb: 0.004, // varsayım
+    fatigue: 0.06, // ölçüm: 100 dakikada %5–7
     kindSub: 0.53, // ölçüm: %1,65 / %0,80 / %0,67 oranından
     kindOmit: 0.26,
     lagCdf: [0.48, 0.73, 0.85, 0.91, 1], // ölçüm: 0,1,2,3,4 harf sonra fark etme
@@ -78,14 +84,53 @@
     let p1; // son yazılan karakter
     let p2; // ondan önceki
 
+    // Oturum profili: her çalıştırma biraz farklı bir "yazar" gibi davranır.
+    const prof = {
+      sigma: 0.28 + r() * 0.17, // tuş aralığı dağınıklığı
+      tempoRho: 0.94 + r() * 0.05, // tempo ne kadar yavaş değişir
+      tempoSd: 0.03 + r() * 0.04, // tempo ne kadar oynar
+      hesitate: 0.02 + r() * 0.05, // kelime içi duraksama olasılığı
+      think: 0.03 + r() * 0.06, // kelime başında düşünme olasılığı
+      burst: 4 + Math.floor(r() * 8), // bir solukta yazılan kelime sayısı
+      typoBias: 0.7 + r() * 0.6,
+    };
+    let tempo = 0; // log ölçeğinde, yavaş dalgalanan hız (AR(1))
+    let wordMul = 1; // o kelimeye özgü hız
+    let posInWord = 0;
+    let burstLeft = 2 + Math.floor(r() * prof.burst * 1.5);
+    let elapsed = 0;
+
     function emit(ch) {
-      let d = logn(r, mean, P.ikiSigma);
-      if (p1 === undefined || p1 === ' ' || p1 === '\n') d *= P.wordStart;
+      tempo = prof.tempoRho * tempo + prof.tempoSd * gauss(r);
+      const wordStart = p1 === undefined || p1 === ' ' || p1 === '\n';
+      if (wordStart) {
+        wordMul = logn(r, 1, 0.18);
+        posInWord = 0;
+      }
+      let d = logn(r, mean, prof.sigma) * Math.exp(tempo) * wordMul;
+      if (wordStart) d *= P.wordStart;
+      else if (posInWord >= 2) d *= P.inWord; // kelime ilerledikçe hızlanma
+      if (p1 !== undefined && lower(ch) === lower(p1)) d *= P.repeat;
       if (isUpper(ch)) d *= P.upper;
       else if (/[^\p{L}\p{N}\s]/u.test(ch)) d *= P.punct;
-      if (r() < P.hesitateProb) d += logn(r, P.hesitateMean, 0.5);
-      if (p1 === ' ' && p2 !== undefined && /[.!?…]/.test(p2)) d += logn(r, P.sentencePause, 0.6);
-      if (p1 === '\n') d += logn(r, P.paragraphPause, 0.6);
+      if (r() < prof.hesitate) d += logn(r, P.hesitateMean, 0.5);
+
+      if (p1 === '\n') {
+        d += logn(r, P.paragraphPause, 0.6);
+      } else if (p1 === ' ') {
+        if (p2 !== undefined && /[.!?…]/.test(p2)) {
+          d += logn(r, P.sentencePause, 0.6);
+        } else if (--burstLeft <= 0) {
+          d += logn(r, P.burstPause, 0.5); // soluk arası
+          burstLeft = 2 + Math.floor(r() * prof.burst * 1.5);
+        } else if (r() < prof.think) {
+          d += logn(r, P.thinkPause, 0.7); // kelime arayışı
+        }
+        if (r() < P.distractProb) d += 4000 + r() * 8000; // dikkat dağılması
+      }
+      d *= 1 + P.fatigue * Math.min(1, elapsed / 6e6); // 100 dakikada ~%6 yavaşlama
+      elapsed += d;
+      posInWord++;
       out.push({ type: 'char', ch, delay: Math.round(Math.max(P.ikiFloor, d)) });
       p2 = p1;
       p1 = ch;
@@ -94,7 +139,9 @@
     let i = 0;
     while (i < chars.length) {
       const ch = chars[i];
-      if (isKey(ch) && r() < o.typoRate) {
+      // Hızlı yazılan bölümlerde hata olasılığı artar.
+      const typoP = Math.min(0.5, o.typoRate * prof.typoBias * Math.exp(-1.2 * tempo));
+      if (isKey(ch) && r() < typoP) {
         // Hata, kelime sınırını geçmeden fark edilir: araya boşluk girerse
         // Docs'un otomatik düzeltmesi metnin uzunluğunu değiştirebilir.
         let maxLag = 0;

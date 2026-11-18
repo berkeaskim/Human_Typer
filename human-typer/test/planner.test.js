@@ -48,3 +48,28 @@ test('Türkçe düzende hatalı harfler Türkçe klavyeden gelir', () => {
   assert.ok(['ğ', 'ü', 'ş', 'ö', 'ç', 'ı'].every((c) => seen.has(c)));
   assert.ok(![...seen].some((c) => /[A-Z]/.test(c)), 'küçük harfli metinde büyük harf üretilmemeli');
 });
+
+test('hız metin boyunca dalgalanır ve her tohumda farklıdır', () => {
+  const text = EN.repeat(40);
+  const windowWpm = (seed) => {
+    const out = [];
+    let ms = 0;
+    let n = 0;
+    for (const a of plan(text, { seed, wpm: 52, typoRate: 0.02 })) {
+      ms += a.delay;
+      if (a.type === 'char' && ++n % 60 === 0) {
+        out.push(12 / (ms / 60000));
+        ms = 0;
+      }
+    }
+    return out;
+  };
+  for (const seed of [1, 2, 3]) {
+    const w = windowWpm(seed);
+    const mean = w.reduce((s, x) => s + x, 0) / w.length;
+    const cv = Math.sqrt(w.reduce((s, x) => s + (x - mean) ** 2, 0) / w.length) / mean;
+    console.log(`  tohum ${seed}: 60 karakterlik pencerelerde ${Math.min(...w).toFixed(0)}–${Math.max(...w).toFixed(0)} kelime/dk, değişkenlik %${(cv * 100).toFixed(0)}`);
+    assert.ok(cv > 0.12, `değişkenlik ${cv}`);
+  }
+  assert.notDeepStrictEqual(windowWpm(1), windowWpm(2));
+});
