@@ -205,6 +205,27 @@ FOOTER_MAIN = XML + f'<w:ftr {W_NS}>' + p(
 FOOTER_FIRST = XML + f'<w:ftr {W_NS}>' + p(r('first page only')) + '</w:ftr>'
 
 
+# Paragraph and run formatting as typed in rich mode: docDefaults spacing and
+# font, a 18 pt title with its own spacing, a smaller run, a hanging indent,
+# page-break-before, a manual page break, a table with widths and a fill.
+RICH_STYLES = XML + f'''<w:styles {W_NS}>
+  <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+</w:styles>'''
+RICH_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
+    p(r('Big title', '<w:b/><w:sz w:val="36"/>'), '<w:spacing w:before="0" w:after="720"/>'),
+    p(r('Body ') + r('small', '<w:sz w:val="18"/>')),
+    p(r('Hanging'), '<w:ind w:left="357" w:hanging="357"/>'),
+    p(r('New page'), '<w:pageBreakBefore/>'),
+    p(r('Before') + '<w:r><w:br w:type="page"/></w:r>'),
+    p(r('After a manual break')),
+    '<w:tbl><w:tblGrid><w:gridCol w:w="520"/><w:gridCol w:w="3000"/></w:tblGrid>'
+    '<w:tr><w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="D9D9D9"/></w:tcPr>' + p(r('A')) + '</w:tc><w:tc>' + p(r('B')) + '</w:tc></w:tr>'
+    '<w:tr><w:tc>' + p(r('C')) + '</w:tc><w:tc>' + p(r('D')) + '</w:tc></w:tr></w:tbl>',
+]) + '</w:body></w:document>'
+
+
 def write_zip(name, parts, compression):
     path = os.path.join(HERE, name)
     with zipfile.ZipFile(path, 'w') as z:
@@ -238,6 +259,10 @@ def main():
         ('word/header1.xml', FOOTER_HEADER),
         ('word/footer1.xml', FOOTER_MAIN),
         ('word/footer2.xml', FOOTER_FIRST),
+    ], zipfile.ZIP_DEFLATED)
+    write_zip('rich.docx', [
+        ('word/document.xml', RICH_DOCUMENT),
+        ('word/styles.xml', RICH_STYLES),
     ], zipfile.ZIP_DEFLATED)
     write_zip('no-document.docx', [('hello.txt', 'hello')], zipfile.ZIP_DEFLATED)
 

@@ -160,6 +160,7 @@
     const root = xml ? kid(parseXml(xml), 'w:styles') : undefined;
     // Document-wide run defaults (font and size most of all).
     const defaults = runProps(kid(kid(kid(root, 'w:docDefaults'), 'w:rPrDefault'), 'w:rPr'));
+    const pDefaults = kid(kid(kid(root, 'w:docDefaults'), 'w:pPrDefault'), 'w:pPr');
     for (const s of kids(root, 'w:style')) {
       const id = s.attrs['w:styleId'];
       byId.set(id, {
@@ -179,7 +180,7 @@
       for (let s = byId.get(id); s && !out.includes(s); s = byId.get(s.basedOn)) out.push(s);
       return out;
     };
-    return { byId, chain, defaultParagraph, defaults };
+    return { byId, chain, defaultParagraph, defaults, pDefaults };
   }
 
   // Latin typefaces of the theme's major (headings) and minor (body) fonts.
@@ -274,10 +275,11 @@
       if (Number.isInteger(lvl) && lvl >= 0 && lvl <= 5) style = 'h' + (lvl + 1);
     }
 
-    // Headings carry their look in the style itself, so list membership
-    // (numbered headings) and style-level run formatting are not applied.
+    // Numbered headings are not made lists. Style-level run formatting is
+    // applied to every paragraph (a Word heading's font, size and bold are
+    // not Docs' own heading look, so they are carried over explicitly).
     let list = null;
-    let base = {};
+    const base = mergeProps(ctx.styles.defaults, ...chain.map((s) => s.rProps).reverse());
     if (style === 'normal') {
       const numPr = pPrs.map((pr) => kid(pr, 'w:numPr')).find(Boolean);
       const numId = val(numPr, 'w:numId');
@@ -286,7 +288,6 @@
         const kind = ctx.listKind(numId, String(level));
         if (kind) list = { kind, level };
       }
-      base = mergeProps(ctx.styles.defaults, ...chain.map((s) => s.rProps).reverse());
     }
 
     const runs = [];
@@ -295,8 +296,50 @@
     collectRuns(p, base, runs, ctx);
     ctx.normal = false;
     const out = { type: 'paragraph', style, list, align: JC[firstVal('w:jc')] || 'left', runs };
+    const fmt = paragraphFormat(pPrs.concat(ctx.styles.pDefaults || []));
+    if (ctx.breakNext) fmt.pageBreak = true;
+    ctx.breakNext = false;
+    if (Object.keys(fmt).length) out.fmt = fmt;
     if (ctx.skipped.pageNumbers > pagesBefore) out.pageField = true; // dropped by normalize()
+    // A section break ends this paragraph: the next one starts a new page.
+    if (pPr && kid(pPr, 'w:sectPr')) ctx.breakNext = true;
     return out;
+  }
+
+  // Paragraph spacing, line spacing, indents and page-break-before, in
+  // points, each from the first pPr (direct, style chain, defaults) that
+  // sets it. Line spacing: `line` is a multiple, `lineExact` a fixed height.
+  function paragraphFormat(pPrs) {
+    const fmt = {};
+    const pick = (el, attr) => {
+      for (const pr of pPrs) {
+        const e = kid(pr, el);
+        if (e && e.attrs[attr] !== undefined) return e;
+      }
+      return null;
+    };
+    const tw = (e, attr) => (e ? Number(e.attrs[attr]) / 20 : undefined);
+    const before = pick('w:spacing', 'w:before');
+    const after = pick('w:spacing', 'w:after');
+    if (before) fmt.before = tw(before, 'w:before');
+    if (after) fmt.after = tw(after, 'w:after');
+    const line = pick('w:spacing', 'w:line');
+    if (line) {
+      const rule = line.attrs['w:lineRule'] || 'auto';
+      const v = Number(line.attrs['w:line']);
+      if (rule === 'auto') fmt.line = Math.round((v / 240) * 100) / 100;
+      else fmt.lineExact = v / 20;
+    }
+    const left = pick('w:ind', 'w:left') || pick('w:ind', 'w:start');
+    if (left) fmt.left = tw(left, left.attrs['w:left'] !== undefined ? 'w:left' : 'w:start');
+    const hanging = pick('w:ind', 'w:hanging');
+    const first = pick('w:ind', 'w:firstLine');
+    if (hanging) fmt.firstLine = -tw(hanging, 'w:hanging');
+    else if (first) fmt.firstLine = tw(first, 'w:firstLine');
+    const pb = pPrs.map((pr) => kid(pr, 'w:pageBreakBefore')).find(Boolean);
+    if (pb && !/^(0|false|off)$/.test(pb.attrs['w:val'] || '')) fmt.pageBreak = true;
+    for (const k of Object.keys(fmt)) if (!(typeof fmt[k] === 'boolean' || isFinite(fmt[k]))) delete fmt[k];
+    return fmt;
   }
 
   // Hyperlinks become plain text: the underline that marks them as links is
@@ -348,7 +391,8 @@
           break;
         case 'w:br':
         case 'w:cr':
-          text += '\n';
+          // A page break becomes a paragraph break that starts a new page.
+          text += c.attrs['w:type'] === 'page' ? '\f' : '\n';
           break;
         case 'w:noBreakHyphen':
           text += '-';
@@ -382,6 +426,9 @@
     const run = { text };
     if (inLink) props.underline = false;
     for (const f of ['bold', 'italic', 'underline', 'strike']) if (props[f]) run[f] = true;
+    const family = props.font && props.font.startsWith('theme:') ? ctx.theme[props.font.slice(6)] : props.font;
+    if (family) run.font = family;
+    if (props.size) run.size = props.size;
     runs.push(run);
   }
 
@@ -417,17 +464,34 @@
         // A w:vMerge without val="restart" continues the cell above it.
         const continued = !!vMerge && vMerge.attrs['w:val'] !== 'restart';
         if (span > 1 || (vMerge && !continued)) ctx.skipped.mergedCells++;
-        row.push({ paragraphs: continued ? [] : cellParagraphs(tc, ctx, false) });
+        const cell = { paragraphs: continued ? [] : cellParagraphs(tc, ctx, false) };
+        const fill = kid(tcPr, 'w:shd') && kid(tcPr, 'w:shd').attrs['w:fill'];
+        if (fill && /^[0-9a-f]{6}$/i.test(fill)) cell.fill = '#' + fill.toUpperCase();
+        row.push(cell);
         for (let k = 1; k < span; k++) row.push({ paragraphs: [] });
       }
       if (row.length) rows.push(row);
     }
-    return { type: 'table', rows };
+    const out = { type: 'table', rows };
+    // Column widths in points, from the table grid.
+    const widths = kids(kid(tbl, 'w:tblGrid'), 'w:gridCol').map((g) => Number(g.attrs['w:w']) / 20);
+    if (widths.length && widths.every((w) => w > 0)) out.widths = widths;
+    return out;
   }
 
   function collectBlocks(container, ctx, out) {
     for (const c of container.children) {
-      if (c.name === 'w:p') out.push(convertParagraph(c, ctx));
+      if (c.name === 'w:p') {
+        const p = convertParagraph(c, ctx);
+        // A page break at the very end moves the break to the next paragraph.
+        const last = p.runs[p.runs.length - 1];
+        if (last && /\f\s*$/.test(last.text)) {
+          last.text = last.text.replace(/\f\s*$/, '');
+          if (!last.text) p.runs.pop();
+          ctx.breakNext = true;
+        }
+        out.push(p);
+      }
       else if (c.name === 'w:tbl') out.push(convertTable(c, ctx));
       else if (TRANSPARENT.has(c.name)) collectBlocks(c, ctx, out);
     }
@@ -492,6 +556,7 @@
     if (!body) throw new Error('Not a Word document (document body is missing)');
 
     const ctx = {
+      theme: readTheme(await readText(dir + 'theme/theme1.xml')),
       fonts: new Map(),
       styles: readStyles(await readText(dir + 'styles.xml')),
       listKind: readNumbering(await readText(dir + 'numbering.xml')),
@@ -553,7 +618,11 @@
         extra[kind] = { paragraphs };
       }
     }
-    const font = bodyFont(bodyFonts, readTheme(await readText(dir + 'theme/theme1.xml')));
+    const font = bodyFont(bodyFonts, ctx.theme);
+    // `font` is the body font; `rich` says paragraphs and runs carry their own
+    // formatting (spacing, fonts, sizes), as typed by planBlock's rich mode.
+    if (font) extra.font = font;
+    extra.rich = true;
     const out = { doc: api.normalize(Object.assign({ blocks }, extra)), warnings: buildWarnings(ctx.skipped) };
     if (font) out.font = font;
     return out;

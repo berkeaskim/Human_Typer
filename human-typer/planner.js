@@ -16,6 +16,10 @@
 //   { type: 'table',  rows, cols, delay }  insert an empty table, caret in first cell
 //   { type: 'pageNumbers', where, skipFirst, delay }  Docs' page-number tool:
 //                                          caret ends in that header/footer
+//   { type: 'para', style, align, fmt, text, font, empty?, delay }  rich mode:
+//                                          paste a whole paragraph (props + first
+//                                          text) then join the empty one after it
+//   key 'PageBreak' ends the paragraph with a page break (Cmd/Ctrl+Enter)
 //   key 'OpenHeader' / 'OpenFooter' moves the caret into the (new, empty) page
 //   header / footer; key 'Escape' returns it to the body where it was.
 //   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
@@ -317,6 +321,79 @@
     return out;
   }
 
+  // --- Docs autocorrect guards ------------------------------------------------
+  // Docs rewrites some typed text: straight quotes become curly, "1. " at the
+  // start of a paragraph starts a numbered list, and (c), --, 1/2 ... become
+  // symbols when the next character is typed. Pasted text is left alone, so
+  // those characters are pasted instead of typed (measured in a live Doc): a
+  // quote alone; a list prefix up to the first letter after it; a symbol
+  // token together with the character after it and one more. Docs drops
+  // whitespace at either end of a paste, so pieces never start or end with it.
+  const AUTOLIST_RE = /^(?:\d{1,3}|[a-zA-Z]|[ivxlcdm]{1,6}|[IVXLCDM]{1,6})[.)]\s+\S|^[*\-•>]\s+\S/u;
+  const SUBST_RE = /\((?:c|r|tm)\)|--|<=|>=|!=|->|<-|=>|\d+\/\d+/giu;
+  function autolistPrefix(text) {
+    const m = AUTOLIST_RE.exec(text);
+    return m ? Array.from(m[0]).length : 0;
+  }
+  // [{ text, paste, link }] for one run; `prefixLen` characters at its start
+  // are pasted (the paragraph's list-like prefix).
+  function guardPieces(text, prefixLen) {
+    const out = [];
+    let pos = 0;
+    for (const seg of splitLinks(text)) {
+      const chars = Array.from(seg.text);
+      if (seg.link) {
+        out.push({ text: seg.text, paste: true, link: true });
+        pos += chars.length;
+        continue;
+      }
+      const mark = chars.map((ch, i) => pos + i < prefixLen || ch === "'" || ch === '"');
+      const charAt = [];
+      chars.forEach((ch, i) => {
+        for (let k = 0; k < ch.length; k++) charAt.push(i);
+      });
+      for (const m of seg.text.matchAll(SUBST_RE)) {
+        const end = m.index + m[0].length;
+        if (end >= charAt.length) continue; // nothing typed after it in this run
+        for (let k = charAt[m.index]; k <= charAt[end]; k++) mark[k] = true;
+      }
+      const ws = (i) => /\s/u.test(chars[i]);
+      // Grow pasted pieces past whitespace at their ends (forward first).
+      for (let i = 0; i < chars.length; i++) {
+        if (!mark[i] || !ws(i)) continue;
+        const startsPiece = i === 0 || !mark[i - 1];
+        const endsPiece = i + 1 >= chars.length || !mark[i + 1];
+        if (endsPiece) {
+          if (i + 1 < chars.length) mark[i + 1] = true;
+          else if (i > 0) mark[i - 1] = true;
+        }
+        if (startsPiece && i > 0) mark[i - 1] = true;
+      }
+      for (let i = chars.length - 1; i >= 0; i--) {
+        // whatever still starts or ends on whitespace (a run of only spaces) is typed
+        if (mark[i] && ws(i) && (i === 0 || !mark[i - 1] || i + 1 >= chars.length || !mark[i + 1])) {
+          let j = i;
+          while (j >= 0 && mark[j] && ws(j)) mark[j--] = false;
+        }
+      }
+      let i = 0;
+      while (i < chars.length) {
+        let j = i;
+        while (j < chars.length && mark[j] === mark[i]) j++;
+        out.push({ text: chars.slice(i, j).join(''), paste: mark[i], link: false });
+        i = j;
+      }
+      pos += chars.length;
+    }
+    return out;
+  }
+  // Length of the shortest start of `chars` that is not only whitespace.
+  function leadLen(chars) {
+    let k = 0;
+    while (k < chars.length - 1 && /\s/u.test(chars[k])) k++;
+    return k + 1;
+  }
+
   // Smooth value noise in [0, 1) over a real position, fixed by `seed`.
   function valueNoise(seed, x) {
     const j = Math.floor(x);
@@ -419,48 +496,66 @@
     });
     return bits;
   }
-  function makeRun(text, bits) {
+  function makeRun(text, bits, font, size) {
     const run = { text };
     INLINE.forEach((f, i) => {
       if (bits & (1 << i)) run[f] = true;
     });
+    if (font) run.font = font;
+    if (size) run.size = size;
     return run;
   }
+  const runKey = (run) => runFormatBits(run) + '|' + (run.font || '') + '|' + (run.size || '');
   // No empty runs, adjacent runs with equal formatting merged, no line breaks.
   function normalizeRuns(runs) {
     const out = [];
-    let lastBits = -1;
+    let lastKey = null;
     for (const run of runs || []) {
       const text = String(run.text == null ? '' : run.text).replace(/[\r\n]+/g, ' ');
       if (!text) continue;
-      const bits = runFormatBits(run);
-      if (bits === lastBits) out[out.length - 1].text += text;
-      else out.push(makeRun(text, bits));
-      lastBits = bits;
+      const key = runKey(run);
+      if (key === lastKey) out[out.length - 1].text += text;
+      else out.push(makeRun(text, runFormatBits(run), run.font, run.size));
+      lastKey = key;
     }
     return out;
   }
+  const FMT_KEYS = ['before', 'after', 'line', 'lineExact', 'left', 'firstLine'];
+  function normalizeFmt(f) {
+    const out = {};
+    if (!f || typeof f !== 'object') return out;
+    for (const k of FMT_KEYS) if (typeof f[k] === 'number' && isFinite(f[k])) out[k] = f[k];
+    if (f.pageBreak) out.pageBreak = true;
+    return out;
+  }
   function normalizeParagraph(p) {
-    return {
+    const out = {
       type: 'paragraph',
       style: STYLES.includes(p.style) ? p.style : 'normal',
       list: p.list ? { kind: p.list.kind === 'number' ? 'number' : 'bullet', level: clamp(p.list.level | 0, 0, 8) } : null,
       align: ALIGNS.includes(p.align) ? p.align : 'left',
       runs: normalizeRuns(p.runs),
     };
+    const fmt = normalizeFmt(p.fmt);
+    if (Object.keys(fmt).length) out.fmt = fmt;
+    return out;
   }
   function normalizeBlock(b) {
     if (b && b.type === 'table') {
       const cols = b.rows.length ? b.rows[0].length : 0;
-      return {
+      const out = {
         type: 'table',
         rows: b.rows.map((row) =>
           Array.from({ length: cols }, (_, c) => {
             const ps = row[c] && row[c].paragraphs && row[c].paragraphs.length ? row[c].paragraphs : [{}];
-            return { paragraphs: ps.map(normalizeParagraph) };
+            const cell = { paragraphs: ps.map(normalizeParagraph) };
+            if (row[c] && row[c].fill) cell.fill = row[c].fill;
+            return cell;
           })
         ),
       };
+      if (Array.isArray(b.widths) && b.widths.length === cols) out.widths = b.widths.slice();
+      return out;
     }
     return normalizeParagraph(b || {});
   }
@@ -496,6 +591,8 @@
     }
     const pn = normalizePageNumbers(doc && doc.pageNumbers);
     if (pn) out.pageNumbers = pn;
+    if (doc && doc.font && (doc.font.family || doc.font.size)) out.font = Object.assign({}, doc.font);
+    if (doc && doc.rich) out.rich = true;
     return out;
   }
   function blockParagraphs(block) {
@@ -661,7 +758,9 @@
 
     // Enter → list/indent → style → align → runs (toggles, then characters).
     // `pauseMs`: thinking time before the paragraph's first action (after Enter).
-    function paragraph(p, needEnter, pauseMs) {
+    const rich = Boolean(doc && doc.rich);
+    function paragraph(p, needEnter, pauseMs, inCell) {
+      if (rich) return paragraphRich(p, needEnter, pauseMs, inCell);
       if (needEnter) enter();
       if (p.runs.length) pendingPause = pauseMs;
 
@@ -688,30 +787,142 @@
         for (const f of INLINE) st[f] = c[f];
         return st;
       };
+      let prefix = autolistPrefix(p.runs.map((r) => r.text).join(''));
       for (const run of p.runs) {
         setInline(runFormatBits(run));
-        for (const seg of splitLinks(run.text)) {
-          if (seg.link) {
-            const a = { type: 'paste', text: seg.text, delay: human(P.pasteLink) };
-            if (restyle) a.style = styled();
-            push(a);
-            typist.after(seg.text);
-            continue;
+        typeRun(run, prefix, restyle ? styled : null);
+        prefix = Math.max(0, prefix - Array.from(run.text).length);
+      }
+    }
+
+    // Types one run: links and autocorrect triggers are pasted, the rest is
+    // typed. `lead`, when given, returns the style to paste the run's first
+    // character with (a font or size change, or the body font).
+    function typeRun(run, prefixLen, lead) {
+      for (const pc of guardPieces(run.text, prefixLen)) {
+        if (pc.paste) {
+          const a = { type: 'paste', text: pc.text, delay: human(pc.link ? P.pasteLink : P.fontKey) };
+          if (lead) {
+            a.style = lead();
+            lead = null;
           }
-          let chars = Array.from(seg.text);
-          if (restyle) {
-            push({ type: 'paste', text: chars[0], delay: human(P.fontKey), style: styled() });
-            typist.after(chars[0]);
-            textChars += 1;
-            chars = chars.slice(1);
-            if (!chars.length) continue;
-          }
+          push(a);
+          typist.after(pc.text);
+          continue;
+        }
+        let chars = Array.from(pc.text);
+        if (lead && /\s/u.test(chars[0])) {
+          // Docs drops whitespace at the start of a paste: type it (in the
+          // previous font) and paste the first visible character styled.
+          let k = 0;
+          while (k < chars.length && /\s/u.test(chars[k])) k++;
           const first = out.length;
-          typist.type(chars);
+          typist.type(chars.slice(0, k));
           claimPause(out[first]);
-          textChars += chars.length;
+          textChars += k;
+          chars = chars.slice(k);
+          if (!chars.length) continue;
+        }
+        if (lead) {
+          const k = 1;
+          const head = chars.slice(0, k).join('');
+          push({ type: 'paste', text: head, delay: human(P.fontKey), style: lead() });
+          lead = null;
+          typist.after(head);
+          textChars += k;
+          chars = chars.slice(k);
+          if (!chars.length) continue;
+        }
+        const first = out.length;
+        typist.type(chars);
+        claimPause(out[first]);
+        textChars += chars.length;
+      }
+    }
+
+    // Rich mode (.docx): every paragraph starts with a paste of the whole
+    // paragraph (style, alignment, spacing, indents and its first text in its
+    // font), which Docs takes over completely; the empty paragraph Docs adds
+    // after it is joined back. Lists are switched on afterwards (the pasted
+    // paragraph is never one). Runs in another font or size start with a
+    // styled paste of their first character.
+    const baseFont = (doc && doc.font) || {};
+    function effFont(run) {
+      let family = run.font || baseFont.family;
+      let size = run.size || baseFont.size;
+      if (font) {
+        if (font.family && (!family || family === baseFont.family)) family = font.family;
+        if (font.size && (!size || size === baseFont.size)) size = font.size;
+      }
+      const f = {};
+      if (family) f.family = family;
+      if (size) f.size = size;
+      return f;
+    }
+    const fkey = (f) => (f.family || '') + '|' + (f.size || '');
+    const styleOf = (f, bits) => {
+      const st = Object.assign({}, f);
+      INLINE.forEach((name, i) => {
+        st[name] = Boolean(bits & (1 << i));
+      });
+      return st;
+    };
+    function paragraphRich(p, needEnter, pauseMs, inCell) {
+      if (needEnter) {
+        if (p.fmt && p.fmt.pageBreak && !inCell) {
+          if (c.style !== 'normal') c.style = 'normal';
+          key('PageBreak', P.enterKey);
+        } else enter();
+      }
+      pendingPause = pauseMs;
+      const runs = p.runs;
+      const fmt = Object.assign({}, p.fmt);
+      delete fmt.pageBreak;
+      const f0 = effFont(runs[0] || {});
+      const bits0 = runs.length ? runFormatBits(runs[0]) : INLINE.reduce((b, name, i) => (c[name] ? b | (1 << i) : b), 0);
+      let text = '';
+      // A paragraph that starts with whitespace is pasted empty (Docs would
+      // drop the leading whitespace of the paste) and typed from the start.
+      if (runs.length && !/^\s/u.test(runs[0].text)) {
+        const pc = guardPieces(runs[0].text, autolistPrefix(runs.map((r) => r.text).join('')))[0];
+        if (pc.paste) text = pc.text;
+        else {
+          const ch = Array.from(runs[0].text);
+          text = ch.slice(0, leadLen(ch)).join('');
         }
       }
+      typist.reset();
+      const a = { type: 'para', style: p.style, align: p.align, fmt, text, font: styleOf(f0, bits0), delay: human(P.fontKey) };
+      if (!text) a.empty = true;
+      push(a);
+      Object.assign(c, { style: p.style, align: p.align, list: null, fontKey: fkey(f0) });
+      INLINE.forEach((name, i) => {
+        c[name] = Boolean(bits0 & (1 << i));
+      });
+      if (text) typist.after(text);
+      if (p.list) {
+        format('list:' + p.list.kind);
+        for (let l = 0; l < p.list.level; l++) format('indent');
+        c.list = { kind: p.list.kind, level: p.list.level };
+      }
+      const skip = Array.from(text).length;
+      runs.forEach((run, r) => {
+        const rest = r === 0 ? Array.from(run.text).slice(skip).join('') : run.text;
+        if (!rest) return;
+        const f = effFont(run);
+        const bits = runFormatBits(run);
+        let lead = null;
+        if (fkey(f) !== c.fontKey) {
+          lead = () => {
+            c.fontKey = fkey(f);
+            INLINE.forEach((name, i) => {
+              c[name] = Boolean(bits & (1 << i));
+            });
+            return styleOf(f, bits);
+          };
+        } else setInline(bits);
+        typeRun(Object.assign({}, run, { text: rest }), 0, lead);
+      });
     }
 
     function table(t) {
@@ -730,6 +941,8 @@
       // right because every cell was created plain.
       setInline(0);
       const ins = { type: 'table', rows: t.rows.length, cols, delay: human(P.tableInsert) };
+      if (t.widths) ins.widths = t.widths.slice();
+      if (t.rows.some((row) => row.some((cl) => cl.fill))) ins.fills = t.rows.map((row) => row.map((cl) => cl.fill || null));
       if (join) ins.join = true; // the empty paragraph made by Enter is removed again
       push(ins);
       c.fontSet = false;
@@ -744,7 +957,7 @@
             c.fontSet = false;
             cellStart();
           }
-          cell.paragraphs.forEach((p, j) => paragraph(p, j > 0, j > 0 ? think(P.cellParagraphPause) : 0));
+          cell.paragraphs.forEach((p, j) => paragraph(p, j > 0, j > 0 ? think(P.cellParagraphPause) : 0, true));
         }
       }
       setInline(0);
@@ -837,8 +1050,13 @@
   // exist in Docs whether or not anything is typed there; they are reported
   // only once touched (typed in, formatted, or ended with Enter).
   // Throws on sequences the planner must never produce.
-  function simulateDoc(actions) {
+  // opts.fonts: also track the font and size typed text gets (rich mode).
+  function simulateDoc(actions, opts) {
+    const trackFonts = Boolean(opts && opts.fonts);
     const newPar = (style, list, align, implicit) => ({ style, list, align, chars: [], implicit: Boolean(implicit) });
+    let cf = ''; // font|size at the caret, set by styled pastes
+    const fontKeyOf = (st) => (st && (st.family || st.size) ? (st.family || '') + '|' + (st.size || '') : null);
+    const bitsOf = (st) => INLINE.reduce((b, f, k) => (st[f] ? b | (1 << k) : b), 0);
     const blocks = [newPar('normal', null, 'left', true)];
     let pars = blocks; // container of the caret's paragraph: `blocks` or a cell
     let par = blocks[0];
@@ -859,13 +1077,41 @@
     actions.forEach((a, i) => {
       if (a.type === 'char') {
         if (a.ch === '\n') fail('newline as a character', i);
-        par.chars.push([a.ch, bits]);
+        par.chars.push([a.ch, bits, cf]);
         par.implicit = false;
       } else if (a.type === 'paste') {
         if (/[\r\n]/.test(a.text) || !a.text) fail('paste with a line break or no text', i);
-        if (a.style && INLINE.some((f, k) => Boolean(a.style[f]) !== Boolean(bits & (1 << k)))) fail('styled paste disagrees with the caret formats', i);
-        for (const ch of Array.from(a.text)) par.chars.push([ch, bits]);
+        if (/\s$/u.test(a.text)) fail('paste ending in whitespace (Docs drops it)', i);
+        // Pasted text keeps its own formatting; the caret takes it over.
+        if (a.style) {
+          bits = bitsOf(a.style);
+          if (fontKeyOf(a.style)) cf = fontKeyOf(a.style);
+        }
+        for (const ch of Array.from(a.text)) par.chars.push([ch, bits, cf]);
         par.implicit = false;
+      } else if (a.type === 'para') {
+        // The pasted paragraph replaces the caret's empty paragraph's
+        // properties (never a list); a page break before it is kept.
+        if (par.chars.length) fail('para paste into a non-empty paragraph', i);
+        if (!STYLES.includes(a.style) || !ALIGNS.includes(a.align)) fail('para with a bad style/align', i);
+        if (a.empty ? a.text : !a.text) fail('para text does not match empty', i);
+        if (a.text && /\s$/u.test(a.text)) fail('para text ending in whitespace', i);
+        par.style = a.style;
+        par.align = a.align;
+        par.list = null;
+        par.fmt = Object.assign(normalizeFmt(a.fmt), par.brk ? { pageBreak: true } : {});
+        delete par.fmt.pageBreak;
+        if (par.brk) par.fmt.pageBreak = true;
+        bits = bitsOf(a.font || {});
+        cf = fontKeyOf(a.font) || cf;
+        for (const ch of Array.from(a.text || '')) par.chars.push([ch, bits, cf]);
+        par.implicit = false;
+      } else if (a.type === 'key' && a.key === 'PageBreak') {
+        if (tbl || inSec) fail('page break inside a table or section', i);
+        par.implicit = false;
+        par = newPar('normal', par.list && { kind: par.list.kind, level: par.list.level }, par.align);
+        par.brk = true;
+        pars.push(par);
       } else if (a.type === 'back') {
         if (!par.chars.length) fail('Backspace at the start of a paragraph', i);
         par.chars.pop();
@@ -873,7 +1119,7 @@
         const kind = a.key === 'OpenHeader' ? 'header' : 'footer';
         if (tbl || inSec) fail(a.key + ' inside a table or section', i);
         if (secs[kind]) fail(kind + ' opened twice', i);
-        inSec = { pars, par, bits };
+        inSec = { pars, par, bits, cf };
         secs[kind] = [newPar('normal', null, 'left')];
         pars = secs[kind];
         par = pars[0];
@@ -887,7 +1133,7 @@
         par = pars[0];
       } else if (a.type === 'key' && a.key === 'Escape') {
         if (!inSec) fail('Escape outside a header/footer', i);
-        ({ pars, par, bits } = inSec);
+        ({ pars, par, bits, cf } = inSec);
         inSec = null;
       } else if (a.type === 'key' && a.key === 'Enter') {
         par.implicit = false;
@@ -931,7 +1177,7 @@
         if (inSec) fail('table in a header/footer', i);
         if (par.chars.length) fail('table inserted in a non-empty paragraph', i);
         const rows = Array.from({ length: a.rows }, () => Array.from({ length: a.cols }, () => [newPar('normal', null, 'left')]));
-        blocks[blocks.length - 1] = { table: rows }; // replaces the empty paragraph
+        blocks[blocks.length - 1] = { table: rows, widths: a.widths, fills: a.fills }; // replaces the empty paragraph
         tbl = { rows, r: 0, c: 0 };
         gotoCell(0, 0);
       } else {
@@ -945,19 +1191,36 @@
 
     const toParagraph = (p) => {
       const runs = [];
-      let lastBits = -1;
-      for (const [ch, b] of p.chars) {
-        if (b === lastBits) runs[runs.length - 1].text += ch;
-        else runs.push(makeRun(ch, b));
-        lastBits = b;
+      let lastKey = null;
+      for (const [ch, b, f] of p.chars) {
+        const key = trackFonts ? b + '#' + f : String(b);
+        if (key === lastKey) runs[runs.length - 1].text += ch;
+        else {
+          const [family, size] = trackFonts && f ? f.split('|') : [];
+          runs.push(makeRun(ch, b, family || undefined, size ? Number(size) : undefined));
+        }
+        lastKey = key;
       }
-      return { type: 'paragraph', style: p.style, list: p.list, align: p.align, runs };
+      const out = { type: 'paragraph', style: p.style, list: p.list, align: p.align, runs };
+      if (p.fmt && Object.keys(p.fmt).length) out.fmt = p.fmt;
+      else if (p.brk) out.fmt = { pageBreak: true };
+      return out;
     };
-    const result = {
-      blocks: blocks.map((b) =>
-        b.table ? { type: 'table', rows: b.table.map((row) => row.map((cell) => ({ paragraphs: cell.map(toParagraph) }))) } : toParagraph(b)
-      ),
+    const toTable = (b) => {
+      const t = {
+        type: 'table',
+        rows: b.table.map((row, r) =>
+          row.map((cell, c) => {
+            const out = { paragraphs: cell.map(toParagraph) };
+            if (b.fills && b.fills[r] && b.fills[r][c]) out.fill = b.fills[r][c];
+            return out;
+          })
+        ),
+      };
+      if (b.widths) t.widths = b.widths.slice();
+      return t;
     };
+    const result = { blocks: blocks.map((b) => (b.table ? toTable(b) : toParagraph(b))) };
     for (const k of SECTION_KINDS) {
       const sec = secs[k] && normalizeSection({ paragraphs: secs[k].map(toParagraph) });
       if (sec) result[k] = sec;
@@ -966,7 +1229,25 @@
     return result;
   }
 
+  // Font families the document uses (rich mode), to make sure Docs has them.
+  function docFonts(doc, opts) {
+    const set = new Set();
+    const add = (f) => f && set.add(f);
+    const o = opts || {};
+    const ov = resolveFont(o.font);
+    if (ov && ov.family) add(ov.family);
+    if (doc && doc.font) add(doc.font.family);
+    const visit = (p) => p.runs && p.runs.forEach((r) => add(r.font));
+    for (const b of (doc && doc.blocks) || []) {
+      if (b.type === 'table') b.rows.forEach((row) => row.forEach((cell) => cell.paragraphs.forEach(visit)));
+      else visit(b);
+    }
+    for (const k of SECTION_KINDS) if (doc && doc[k]) doc[k].paragraphs.forEach(visit);
+    return [...set];
+  }
+
   const api = {
+    docFonts,
     plan,
     simulate,
     summarize,
@@ -980,6 +1261,8 @@
     simulateDoc,
     normalizeDoc,
     splitLinks,
+    guardPieces,
+    autolistPrefix,
     resolveFont,
     SPEEDS: Object.keys(P.speeds),
     sections,

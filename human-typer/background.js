@@ -288,7 +288,14 @@ async function buildCompose(job, fresh) {
     if (job.item >= doc.blocks.length) throw new Error('resume_inside_section');
     if (doc.blocks[job.item].type === 'table') throw new Error('resume_inside_table');
   }
-  return { pre: fresh ? [{ type: 'key', key: 'DocEnd', delay: 800 }] : [], actions: planned.actions, carry: planned.carry };
+  const pre = [];
+  if (fresh) {
+    // Fonts first: Docs drops pasted fonts that are not in the user's font menu.
+    const families = Planner.docFonts(doc, plannerOpts(job));
+    if (families.length) pre.push({ type: 'fonts', families, delay: 600 });
+    pre.push({ type: 'key', key: 'DocEnd', delay: 800 });
+  }
+  return { pre, actions: planned.actions, carry: planned.carry };
 }
 
 async function buildFill(job, fresh) {

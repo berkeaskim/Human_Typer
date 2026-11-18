@@ -72,6 +72,7 @@
     ParaEnd: ['ArrowDown', 'ArrowDown', 40, IS_MAC ? { altKey: true } : { ctrlKey: true }],
     SelectPara: ['ArrowUp', 'ArrowUp', 38, IS_MAC ? { altKey: true, shiftKey: true } : { ctrlKey: true, shiftKey: true }],
     Escape: ['Escape', 'Escape', 27, {}],
+    PageBreak: ['Enter', 'Enter', 13, IS_MAC ? { metaKey: true } : { ctrlKey: true }],
   };
   const digit = (d, extra) => [String(d), 'Digit' + d, 48 + d, mod(extra)];
   const letter = (c, extra) => [c, 'Key' + c.toUpperCase(), c.toUpperCase().charCodeAt(0), mod(extra)];
@@ -146,15 +147,31 @@
   // Docs has no keyboard command for "insert table", so an empty grid is
   // pasted in the markup Docs itself puts on the clipboard. Afterwards the
   // caret sits below the table; it is walked back into the first cell.
-  function tableHtml(rows, cols) {
-    const width = Math.max(60, Math.floor(450 / cols));
-    const cell = '<td style="border:1px solid #000;padding:5pt"><p dir="ltr"><br /></p></td>';
-    const id = 'docs-internal-guid-' + Math.random().toString(16).slice(2, 10) + '-7fff-4a1b-9c2d-' + Date.now().toString(16).padStart(12, '0');
+  // `widths`: column widths in pt (from the source); the table is scaled
+  // down to fit a portrait A4/Letter text width. `fills`: cell backgrounds.
+  const MAX_TABLE_PX = 600;
+  function tableHtml(rows, cols, widths, fills) {
+    let px = widths && widths.length === cols ? widths.map((w) => (w * 4) / 3) : Array(cols).fill(Math.max(60, Math.floor(450 / cols)));
+    const total = px.reduce((a, b) => a + b, 0);
+    if (total > MAX_TABLE_PX) px = px.map((w) => (w * MAX_TABLE_PX) / total);
+    const cell = (r, c) => {
+      const fill = fills && fills[r] && fills[r][c];
+      return '<td style="border:1px solid #000;padding:5pt' + (fill ? ';background-color:' + fill : '') + '"><p dir="ltr"><br /></p></td>';
+    };
+    let body = '';
+    for (let r = 0; r < rows; r++) {
+      body += '<tr>';
+      for (let c = 0; c < cols; c++) body += cell(r, c);
+      body += '</tr>';
+    }
     return (
-      '<meta charset="utf-8"><b style="font-weight:normal;" id="' + id + '"><div dir="ltr" align="left">' +
-      '<table style="border:none;border-collapse:collapse;"><colgroup>' + ('<col width="' + width + '" />').repeat(cols) +
-      '</colgroup><tbody>' + ('<tr>' + cell.repeat(cols) + '</tr>').repeat(rows) + '</tbody></table></div></b>'
+      '<meta charset="utf-8"><b style="font-weight:normal;" id="' + guid() + '"><div dir="ltr" align="left">' +
+      '<table style="border:none;border-collapse:collapse;"><colgroup>' + px.map((w) => '<col width="' + Math.round(w) + '" />').join('') +
+      '</colgroup><tbody>' + body + '</tbody></table></div></b>'
     );
+  }
+  function guid() {
+    return 'docs-internal-guid-' + Math.random().toString(16).slice(2, 10) + '-7fff-4a1b-9c2d-' + Date.now().toString(16).padStart(12, '0');
   }
 
   // `join`: the table was pasted into an empty paragraph made for it (Enter
@@ -163,12 +180,12 @@
   // before it, then the caret steps back into the first cell. (Pasting at the
   // end of the previous paragraph instead would give the cells and the
   // paragraph after the table that paragraph's alignment and list.)
-  async function insertTable(rows, cols, join) {
+  async function insertTable(rows, cols, join, widths, fills) {
     const t = target();
     if (!t) return false;
     const before = caret();
     const data = new t.win.DataTransfer();
-    data.setData('text/html', tableHtml(rows, cols));
+    data.setData('text/html', tableHtml(rows, cols, widths, fills));
     data.setData('text/plain', '');
     t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
     // Wait until Docs has laid the table out (the caret jumps below it).
@@ -233,6 +250,51 @@
     await sleep(900);
     return true;
   }
+  // --- fonts ------------------------------------------------------------------
+  // Docs only keeps a pasted font that is in the user's font menu ("My
+  // fonts"); others fall back to Arial (live-tested with Calibri). Missing
+  // ones are added through Font › More fonts: search, tick, Done.
+  async function ensureFonts(families) {
+    const box = document.getElementById('docs-font-family');
+    if (!box || !families || !families.length) return true;
+    mouse(box, CLICK);
+    const first = await waitFor('.goog-menu .docs-font-menuitem-with-icon, .goog-menu .goog-menuitem', 2000);
+    if (!first) return closeMenus().then(() => true);
+    const listed = new Set([...document.querySelectorAll('.goog-menu .goog-menuitem')].filter(visible).map((i) => i.textContent.trim().toLowerCase()));
+    const missing = families.filter((f) => !listed.has(String(f).toLowerCase()));
+    if (!missing.length) {
+      await closeMenus();
+      return true;
+    }
+    mouse(first.closest('.goog-menuitem') || first, CLICK); // "More fonts" is the first entry
+    const search = await waitFor('[role=dialog] input[type=text]', 4000);
+    if (!search) return closeMenus().then(() => true);
+    const dialog = search.closest('[role=dialog]');
+    for (const fam of missing) {
+      search.focus();
+      search.value = fam;
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(1200);
+      for (const cb of [...dialog.querySelectorAll('input[type=checkbox]')].filter(visible)) {
+        let row = cb;
+        for (let k = 0; k < 8 && row && row !== dialog; k++) {
+          if ((row.textContent || '').trim().toLowerCase() === fam.toLowerCase()) break;
+          row = row.parentElement;
+        }
+        if (row && row !== dialog && (row.textContent || '').trim().toLowerCase() === fam.toLowerCase()) {
+          if (!cb.checked) cb.click();
+          break;
+        }
+      }
+    }
+    await sleep(300);
+    const ok = [...dialog.querySelectorAll('button[data-mdc-dialog-action=ok]')].find(visible);
+    if (ok) ok.click();
+    await sleep(800);
+    focus();
+    return true;
+  }
+
   async function closeMenus() {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
     await sleep(200);
@@ -246,7 +308,7 @@
   // `style` the text is pasted in Docs' own clipboard markup with that font,
   // size and inline formats, and the text typed after it follows it.
   const esc = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  function styledHtml(text, st) {
+  function spanCss(st) {
     const css = [];
     if (st.size) css.push('font-size:' + st.size + 'pt');
     if (st.family) css.push("font-family:'" + String(st.family).replace(/['";\\<>]/g, '') + "'");
@@ -254,16 +316,109 @@
     css.push('font-weight:' + (st.bold ? 700 : 400), 'font-style:' + (st.italic ? 'italic' : 'normal'));
     const deco = [st.underline && 'underline', st.strike && 'line-through'].filter(Boolean).join(' ');
     css.push('text-decoration:' + (deco || 'none'), 'vertical-align:baseline', 'white-space:pre-wrap');
-    const id = 'docs-internal-guid-' + Math.random().toString(16).slice(2, 10) + '-7fff-4a1b-9c2d-' + Date.now().toString(16).padStart(12, '0');
-    return '<meta charset="utf-8"><b style="font-weight:normal;" id="' + id + '"><span style="' + css.join(';') + ';">' + esc(text) + '</span></b>';
+    return css.join(';') + ';';
   }
-  function pasteText(text, style) {
+  function styledHtml(text, st) {
+    return '<meta charset="utf-8"><b style="font-weight:normal;" id="' + guid() + '"><span style="' + spanCss(st) + '">' + esc(text) + '</span></b>';
+  }
+
+  // --- whole paragraphs (rich mode) -----------------------------------------
+  // A pasted <p>/<hN> brings its paragraph properties (spacing, line height,
+  // indents, alignment, heading style) and its text formatting; Docs puts it
+  // before the caret's empty paragraph, which one Backspace joins back so the
+  // caret ends after the pasted text in the pasted paragraph (live-tested).
+  function paraHtml(a) {
+    const tag = /^h[1-6]$/.test(a.style) ? a.style : 'p';
+    const f = a.fmt || {};
+    const css = [f.lineExact ? 'line-height:' + f.lineExact + 'pt' : 'line-height:' + (f.line || 1.15)];
+    css.push('margin-top:' + (f.before || 0) + 'pt', 'margin-bottom:' + (f.after || 0) + 'pt');
+    // Docs reads a negative text-indent as "indent start = margin-left -
+    // text-indent" (live-tested), so a Word hanging indent (left L, hanging
+    // H) is sent as margin-left L - H.
+    const left = (f.left || 0) + (f.firstLine < 0 ? f.firstLine : 0);
+    if (left) css.push('margin-left:' + left + 'pt');
+    if (f.firstLine) css.push('text-indent:' + f.firstLine + 'pt');
+    css.push('text-align:' + (a.align || 'left'));
+    return (
+      '<meta charset="utf-8"><b style="font-weight:normal;" id="' + guid() + '"><' + tag + ' dir="ltr" style="' + css.join(';') + ';">' +
+      '<span style="' + spanCss(a.font || {}) + '">' + esc(a.empty ? 'x' : a.text) + '</span></' + tag + '></b>'
+    );
+  }
+  // Docs applies edits asynchronously; the only DOM signal is the caret. In
+  // a live run a Backspace sent while the caret was still moving from the
+  // previous Enter was applied BEFORE the paste (letters split off, empty
+  // paragraphs lost), so every step waits for a still caret, then for the
+  // movement it expects, in document coordinates (Docs scrolls as it types).
+  function docCaret() {
+    const c = caret();
+    if (!c) return null;
+    const sc = document.querySelector('.kix-appview-editor');
+    return { x: c.x, y: c.y + (sc ? sc.scrollTop : 0) };
+  }
+  async function stable(ms) {
+    let last = docCaret();
+    let same = 0;
+    for (let t = 0; t < (ms || 1500) && same < 3; t += 50) {
+      await sleep(50);
+      const now = docCaret();
+      same = now && last && now.x === last.x && now.y === last.y ? same + 1 : 0;
+      last = now;
+    }
+    return last;
+  }
+  async function until(test, ms) {
+    for (let t = 0; t < ms; t += 40) {
+      await sleep(40);
+      const now = docCaret();
+      if (now && test(now)) return true;
+    }
+    return false;
+  }
+  async function settle(from, ms) {
+    return until((now) => !from || now.x !== from.x || now.y !== from.y, ms);
+  }
+  async function pasteParagraph(a) {
+    const t = target();
+    if (!t) return false;
+    const data = new t.win.DataTransfer();
+    data.setData('text/html', paraHtml(a));
+    data.setData('text/plain', a.empty ? 'x' : a.text);
+    const before = await stable();
+    t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
+    // The pasted paragraph goes in above the caret's paragraph: the caret moves down.
+    await until((now) => !before || now.y > before.y + 2, 3000);
+    let at = await stable();
+    // Join the empty paragraph after the pasted one: the caret moves up. On a
+    // centred, indented or list paragraph Docs' first Backspace only resets
+    // that (live-tested: the caret jumps left, same line), so press again
+    // until the caret is on the pasted paragraph's line.
+    const y0 = at ? at.y : null;
+    for (let k = 0; k < 4; k++) {
+      key('Backspace');
+      if (y0 === null || (await until((now) => now.y < y0 - 2, 1500))) break;
+      await stable(600);
+    }
+    if (a.empty) {
+      at = await stable();
+      key('Backspace'); // and remove the placeholder character
+      if (!(await settle(at, 1500))) {
+        key('Backspace');
+        await settle(at, 1500);
+      }
+    }
+    await stable(800);
+    return true;
+  }
+  async function pasteText(text, style) {
     const t = target();
     if (!t) return false;
     const data = new t.win.DataTransfer();
     if (style) data.setData('text/html', styledHtml(text, style));
     data.setData('text/plain', String(text));
+    const before = await stable(800);
     t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
+    await settle(before, 1500); // keys typed before the paste lands would go in front of it
+    await stable(600);
     return true;
   }
 
@@ -280,7 +435,11 @@
       case 'format':
         return format(action);
       case 'table':
-        return insertTable(action.rows, action.cols, action.join);
+        return insertTable(action.rows, action.cols, action.join, action.widths, action.fills);
+      case 'para':
+        return pasteParagraph(action);
+      case 'fonts':
+        return ensureFonts(action.families);
       case 'pageNumbers':
         return insertPageNumbers(action.where, action.skipFirst);
       case 'paste':
@@ -306,5 +465,5 @@
     return { x: Math.round(r.left), y: Math.round(r.top) };
   }
 
-  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, insertPageNumbers, pasteText, focus, caret, isMac: IS_MAC };
+  root.HumanTyperTransport = { ready: () => !!target(), perform, typeChar, backspace, key, format, insertTable, insertPageNumbers, ensureFonts, pasteText, focus, caret, isMac: IS_MAC };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

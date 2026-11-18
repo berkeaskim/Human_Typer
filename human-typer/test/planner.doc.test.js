@@ -490,3 +490,67 @@ test('speed presets order the base pace slow < normal < fast', () => {
   assert.ok(slow > 33 && slow < 48 && normal > 52 && normal < 72 && fast > 75 && fast < 102, `${slow} ${normal} ${fast}`);
   assert.strictEqual(targetWpm({ seed: 1, speed: 'nonsense' }, 0), targetWpm({ seed: 1 }, 0));
 });
+
+test('Docs autocorrect triggers are pasted, never as a paste that starts or ends with whitespace', () => {
+  const { guardPieces, autolistPrefix } = require('../planner.js');
+  const pasted = (t, pl = 0) => guardPieces(t, pl).filter((p) => p.paste).map((p) => p.text);
+  assert.deepStrictEqual(pasted("Sam's 'quoted' text (c) 2026 -- ok, 1/2 done."), ["'", "'", "'", '(c) 2', '-- o', '1/2 d']);
+  assert.deepStrictEqual(pasted('1. Unverifiable sources.', autolistPrefix('1. Unverifiable sources.')), ['1. U']);
+  assert.strictEqual(autolistPrefix('Not a list. 1. here'), 0);
+  for (const t of ['a  (r)  b', 'x "y" z', "it's", '(c)', 'a -- ', '"   "']) {
+    const pcs = guardPieces(t, 0);
+    assert.strictEqual(pcs.map((p) => p.text).join(''), t);
+    for (const p of pcs) if (p.paste) assert.ok(!/^\s|\s$/u.test(p.text), JSON.stringify([t, p.text]));
+  }
+});
+
+test('rich mode: every paragraph is pasted with its format, runs switch fonts, the virtual editor matches', () => {
+  const F = { font: 'Calibri', size: 11 };
+  const run = (text, extra) => Object.assign({ text }, F, extra);
+  const RP = (runs, extra) => Object.assign({ type: 'paragraph', style: 'normal', list: null, align: 'left', runs, fmt: { after: 6, line: 1.15 } }, extra);
+  const doc = {
+    rich: true,
+    font: { family: 'Calibri', size: 11 },
+    blocks: [
+      RP([run('Big title', { bold: true, size: 18 })], { align: 'center', fmt: { after: 36, line: 1.15 } }),
+      RP([run("Sam's text (c) 2026, "), run('small', { size: 9 }), run('-back')]),
+      RP([run('1. Item-like.', { bold: true }), run(' rest')]),
+      RP([run('Bulleted')], { list: { kind: 'bullet', level: 1 } }),
+      RP([run('Heading', { bold: true, size: 15 })], { style: 'h1', fmt: { before: 12, after: 8, line: 1.15, pageBreak: true } }),
+      RP([]),
+      { type: 'table', widths: [26, 150], rows: [[{ fill: '#D9D9D9', paragraphs: [RP([run('A', { size: 9 })])] }, { paragraphs: [RP([run('B', { size: 9 })])] }]] },
+      RP([run('After')], { fmt: { after: 6, line: 1.15, left: 17.85, firstLine: -17.85 } }),
+    ],
+  };
+  for (let seed = 1; seed <= 20; seed++) {
+    const all = [];
+    let carry = initialCarry();
+    for (let k = 0; k < itemCount(doc); k++) {
+      const res = planBlock(doc, k, { seed, typoRate: 0.2 }, carry);
+      all.push(...res.actions);
+      carry = res.carry;
+    }
+    const expected = normalizeDoc(doc);
+    delete expected.font;
+    delete expected.rich;
+    assert.deepStrictEqual(simulateDoc(all, { fonts: true }), expected);
+    const paras = all.filter((a) => a.type === 'para');
+    assert.strictEqual(paras.length, 9); // 7 body paragraphs + 2 cells
+    assert.deepStrictEqual(paras[0].font, { family: 'Calibri', size: 18, bold: true, italic: false, underline: false, strike: false });
+    assert.strictEqual(paras[2].text, '1. I'); // list-like prefix rides on the paragraph paste
+    assert.ok(paras[5].empty);
+    assert.strictEqual(all.filter((a) => a.key === 'PageBreak').length, 1);
+    assert.ok(all.some((a) => a.type === 'paste' && a.style && a.style.size === 9));
+    assert.deepStrictEqual(all.find((a) => a.type === 'table').widths, [26, 150]);
+    for (const a of all) if (a.type === 'paste' || a.type === 'para') assert.ok(!/^\s|\s$/u.test(a.text || 'x'), a.text);
+  }
+});
+
+test('a font change on a run that starts with a space types the space, then pastes the letter', () => {
+  const run = (text, extra) => Object.assign({ text, font: 'Calibri', size: 11 }, extra);
+  const doc = { rich: true, font: { family: 'Calibri', size: 11 }, blocks: [{ type: 'paragraph', style: 'normal', list: null, align: 'left', runs: [run('small', { size: 9 }), run(' back')] }] };
+  const { actions } = planBlock(doc, 0, { seed: 1, typoRate: 0 }, initialCarry());
+  const i = actions.findIndex((a) => a.type === 'paste' && a.text === 'b');
+  assert.ok(i > 0 && actions[i - 1].type === 'char' && actions[i - 1].ch === ' ');
+  assert.strictEqual(actions[i].style.size, 11);
+});

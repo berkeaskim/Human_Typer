@@ -5,7 +5,13 @@
 //   Doc       = { blocks: Block[] }
 //   Block     = Paragraph | Table
 //   Paragraph = { type: 'paragraph', style, list, align, runs: Run[] }
-//   Run       = { text, bold?: true, italic?: true, underline?: true, strike?: true }
+//   Run       = { text, bold?: true, italic?: true, underline?: true, strike?: true,
+//                 font?: string, size?: number (pt) }
+//   Paragraph.fmt? = { before?, after?, line? (multiple), lineExact? (pt),
+//                 left?, firstLine? (pt; negative = hanging), pageBreak?: true }
+//   Table.widths? = column widths in pt; Cell.fill? = '#RRGGBB'
+//   Doc.font? = { family?, size? } body font; Doc.rich?: true when paragraphs
+//               and runs carry their own formatting (.docx input)
 //   Table     = { type: 'table', rows: Cell[][] }   (rectangular)
 //   Cell      = { paragraphs: Paragraph[] }         (at least one)
 //   Doc.header, Doc.footer = { paragraphs: Paragraph[] }  (optional; present
@@ -27,7 +33,25 @@
 
   // --- normalize -----------------------------------------------------------
   function sameFlags(a, b) {
-    return FLAGS.every((f) => (a[f] === true) === (b[f] === true));
+    return FLAGS.every((f) => (a[f] === true) === (b[f] === true)) && (a.font || '') === (b.font || '') && (a.size || 0) === (b.size || 0);
+  }
+  function cleanFont(x) {
+    return typeof x === 'string' ? x.replace(/[^\p{L}\p{N} \-]/gu, '').trim().slice(0, 60) : '';
+  }
+  function cleanSize(x) {
+    const n = Math.round(Number(x) * 2) / 2;
+    return n >= 1 && n <= 400 ? n : 0;
+  }
+  const FMT_NUM = ['before', 'after', 'line', 'lineExact', 'left', 'firstLine'];
+  function cleanFmt(f) {
+    const out = {};
+    if (!f || typeof f !== 'object') return out;
+    for (const k of FMT_NUM) {
+      const n = Number(f[k]);
+      if (f[k] !== undefined && isFinite(n) && Math.abs(n) <= 2000) out[k] = Math.round(n * 100) / 100;
+    }
+    if (f.pageBreak) out.pageBreak = true;
+    return out;
   }
 
   // Cleans a run list and splits it at line breaks: returns one Run[] per line.
@@ -36,14 +60,23 @@
     for (const run of Array.isArray(runs) ? runs : []) {
       if (!run || run.text == null) continue;
       const text = String(run.text)
-        .replace(/\r\n?|[\v\f\u2028\u2029]/g, '\n')
+        .replace(/\r\n?|[\v\u2028\u2029]/g, '\n')
         .replace(/\t/g, ' ');
-      text.split('\n').forEach((part, i) => {
+      // '\f' (page break) ends the line like '\n' and starts the next on a new page.
+      text.split(/(?<=\f)|\n/).forEach((part, i) => {
         if (i > 0) lines.push([]);
+        if (part.endsWith('\f')) {
+          lines.breaks = (lines.breaks || new Set()).add(lines.length); // the line after this one
+          part = part.slice(0, -1);
+        }
         if (!part) return;
         const line = lines[lines.length - 1];
         const clean = { text: part };
         for (const f of FLAGS) if (run[f]) clean[f] = true;
+        const font = cleanFont(run.font);
+        const size = cleanSize(run.size);
+        if (font) clean.font = font;
+        if (size) clean.size = size;
         const last = line[line.length - 1];
         if (last && sameFlags(last, clean)) last.text += part;
         else line.push(clean);
@@ -62,13 +95,16 @@
       const level = Math.trunc(Number(src.list.level)) || 0;
       list = { kind: src.list.kind, level: Math.min(MAX_LIST_LEVEL, Math.max(0, level)) };
     }
-    return splitRuns(src.runs).map((runs) => ({
-      type: 'paragraph',
-      style,
-      list: list && { kind: list.kind, level: list.level },
-      align,
-      runs,
-    }));
+    const fmt = cleanFmt(src.fmt);
+    const lines = splitRuns(src.runs);
+    return lines.map((runs, i) => {
+      const p = { type: 'paragraph', style, list: list && { kind: list.kind, level: list.level }, align, runs };
+      const f = Object.assign({}, fmt);
+      if (i > 0) delete f.pageBreak; // only the first line keeps page-break-before...
+      if (lines.breaks && lines.breaks.has(i)) f.pageBreak = true; // ...or one that follows a '\f'
+      if (Object.keys(f).length) p.fmt = f;
+      return p;
+    });
   }
 
   function emptyParagraph() {
@@ -86,7 +122,9 @@
             if (p && p.type === 'paragraph') paragraphs.push(...normalizeParagraph(p));
           }
           if (paragraphs.length === 0) paragraphs.push(emptyParagraph());
-          return { paragraphs };
+          const out = { paragraphs };
+          if (cell && /^#[0-9A-F]{6}$/i.test(cell.fill || '')) out.fill = cell.fill.toUpperCase();
+          return out;
         })
       );
     if (rows.length === 0) return null;
@@ -94,7 +132,10 @@
     for (const row of rows) {
       while (row.length < width) row.push({ paragraphs: [emptyParagraph()] });
     }
-    return { type: 'table', rows };
+    const out = { type: 'table', rows };
+    const w = Array.isArray(t.widths) ? t.widths.map(Number) : [];
+    if (w.length === width && w.every((x) => x > 0 && x < 5000)) out.widths = w.map((x) => Math.round(x * 100) / 100);
+    return out;
   }
 
   // Returns a new Doc that satisfies every rule of the model. Never throws.
@@ -119,6 +160,14 @@
     }
     const pn = doc && doc.pageNumbers;
     if (pn && typeof pn === 'object') out.pageNumbers = { where: pn.where === 'header' ? 'header' : 'footer', skipFirst: Boolean(pn.skipFirst) };
+    const f = doc && doc.font;
+    if (f && typeof f === 'object') {
+      const font = {};
+      if (cleanFont(f.family)) font.family = cleanFont(f.family);
+      if (cleanSize(f.size)) font.size = cleanSize(f.size);
+      if (font.family || font.size) out.font = font;
+    }
+    if (doc && doc.rich) out.rich = true;
     return out;
   }
 

@@ -45,8 +45,8 @@ test('title, subtitle and headings (style names, localized ids, basedOn, outline
   ]);
 });
 
-test('heading text does not inherit bold from the heading style', () => {
-  assert.deepStrictEqual(find('Giriş').runs, [{ text: 'Giriş' }]);
+test('heading text carries the heading style run formatting (the Word look, not the Docs one)', () => {
+  assert.deepStrictEqual(find('Giriş').runs, [{ text: 'Giriş', bold: true }]);
 });
 
 test('bold, italic, underline and strike runs; equal neighbours are merged', () => {
@@ -233,4 +233,24 @@ test('header and footer of the last section; page-number paragraphs are left out
     'Page numbers are added with Docs’ page-number tool; other text on that line (e.g. “Page … of …”) is left out',
     'The different first-page header/footer is skipped; the main one is typed',
   ]);
+});
+
+test('rich formatting: spacing, indents, page breaks, run fonts and sizes, table widths and fills', async () => {
+  const { doc } = await HT.parseDocx(fixture('rich.docx'));
+  assert.strictEqual(doc.rich, true);
+  assert.deepStrictEqual(doc.font, { family: 'Calibri', size: 11 });
+  const [title, body, hang, broken, before, afterBr, table] = doc.blocks;
+  assert.deepStrictEqual(before.runs, [{ text: 'Before', font: 'Calibri', size: 11 }]);
+  assert.deepStrictEqual(title.runs, [{ text: 'Big title', bold: true, font: 'Calibri', size: 18 }]);
+  assert.deepStrictEqual(title.fmt, { before: 0, after: 36, line: 1.15 });
+  assert.deepStrictEqual(body.fmt, { after: 6, line: 1.15 });
+  assert.deepStrictEqual(body.runs, [{ text: 'Body ', font: 'Calibri', size: 11 }, { text: 'small', font: 'Calibri', size: 9 }]);
+  assert.deepStrictEqual(hang.fmt, { after: 6, line: 1.15, left: 17.85, firstLine: -17.85 });
+  assert.deepStrictEqual(broken.fmt, { after: 6, line: 1.15, pageBreak: true });
+  assert.strictEqual(broken.runs[0].text, 'New page');
+  assert.deepStrictEqual(afterBr.fmt, { after: 6, line: 1.15, pageBreak: true });
+  assert.strictEqual(afterBr.runs[0].text, 'After a manual break');
+  assert.deepStrictEqual(table.widths, [26, 150]);
+  assert.strictEqual(table.rows[0][0].fill, '#D9D9D9');
+  assert.strictEqual(table.rows[1][0].fill, undefined);
 });
