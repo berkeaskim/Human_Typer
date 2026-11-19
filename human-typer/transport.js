@@ -231,7 +231,15 @@
   }
   const HOVER = ['mouseover', 'mouseenter', 'mousemove'];
   const CLICK = ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'];
+  // Menus sometimes open too slowly on a long document: try a few times.
   async function insertPageNumbers(where, skipFirst) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await tryPageNumbers(where, skipFirst)) return true;
+      await sleep(1000);
+    }
+    return false;
+  }
+  async function tryPageNumbers(where, skipFirst) {
     const menu = document.getElementById('docs-insert-menu');
     if (!menu) return false;
     mouse(menu, CLICK);
@@ -424,27 +432,22 @@
     // The pasted paragraph goes in above the caret's paragraph: the caret moves down.
     await until((now) => !before || now.y > before.y + 2, 3000);
     let at = await stable();
-    // Join the empty paragraph after the pasted one: the caret moves up. On a
-    // centred, indented or list paragraph Docs' first Backspace only resets
-    // that (live-tested: the caret jumps left, same line), so press again
-    // until the caret is on the pasted paragraph's line.
-    // Press again only while the caret is still on that same line: any
-    // other movement means the join happened (a further Backspace would
-    // delete the first letter, as seen once in a table cell).
-    const y0 = at ? at.y : null;
-    for (let k = 0; k < 4; k++) {
-      key('Backspace');
-      if (y0 === null || (await until((now) => now.y < y0 - 2, 1500))) break;
-      const now = await stable(600);
-      if (!now || Math.abs(now.y - y0) > 2) break;
-    }
+    // Join the empty paragraph after the pasted one. That paragraph keeps
+    // the formatting of the one it came from, and a Backspace at its start
+    // first resets a centred/indented/list format instead of joining - with
+    // a hanging indent the caret does not even move, so the caret cannot
+    // tell the two apart. Delete at the end of the pasted paragraph always
+    // joins in one step, and Docs applies keys in order, so no timing is
+    // involved (live-tested; a timed Backspace repeat lost letters on a slow
+    // document).
+    key('ArrowLeft');
+    await sleep(80);
+    key('Delete');
+    if (at) await until((now) => now.y < at.y - 2, 3000);
     if (a.empty) {
       at = await stable();
-      key('Backspace'); // and remove the placeholder character
-      if (!(await settle(at, 1500))) {
-        key('Backspace');
-        await settle(at, 1500);
-      }
+      key('Backspace'); // and remove the placeholder character (once: keys apply in order)
+      await settle(at, 1500);
     }
     await stable(800);
     return true;
