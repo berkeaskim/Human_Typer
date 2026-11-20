@@ -226,6 +226,38 @@ RICH_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
 ]) + '</w:body></w:document>'
 
 
+# Pictures: a sized drawing in its own centred paragraph, the same file again
+# in the middle of a sentence, a VML picture, an unsupported format (EMF), a
+# linked picture, and one inside a table cell.
+import base64
+PNG_1X1 = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAfbLI3wAAAABJRU5ErkJggg==')
+
+
+def drawing(rid, cx, cy, attr='r:embed'):
+    return (f'<w:r><w:drawing><wp:inline><wp:extent cx="{cx}" cy="{cy}"/><a:graphic><a:graphicData><pic:pic>'
+            f'<pic:blipFill><a:blip {attr}="{rid}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>')
+
+
+IMAGES_DOCUMENT = XML + f'<w:document {W_NS}><w:body>' + ''.join([
+    p(r('Intro')),
+    p(drawing('rId1', 2743200, 1828800), '<w:jc w:val="center"/>'),
+    p(r('left ') + drawing('rId1', 914400, 914400) + r(' right')),
+    p('<w:r><w:pict><v:shape style="position:absolute;width:100pt;height:1in"><v:imagedata r:id="rId2"/></v:shape></w:pict></w:r>'),
+    p(drawing('rId3', 914400, 914400) + r('after emf')),
+    p(drawing('rId4', 914400, 914400, 'r:link')),
+    '<w:tbl><w:tr><w:tc>' + p(drawing('rId1', 914400, 914400) + r('cell')) + '</w:tc></w:tr></w:tbl>',
+    p(r('Outro')),
+]) + '</w:body></w:document>'
+IMAGES_RELS = XML + (
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>'
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/photo.JPG"/>'
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image3.emf"/>'
+    '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.com/x.png" TargetMode="External"/>'
+    '</Relationships>'
+)
+
+
 def write_zip(name, parts, compression):
     path = os.path.join(HERE, name)
     with zipfile.ZipFile(path, 'w') as z:
@@ -263,6 +295,13 @@ def main():
     write_zip('rich.docx', [
         ('word/document.xml', RICH_DOCUMENT),
         ('word/styles.xml', RICH_STYLES),
+    ], zipfile.ZIP_DEFLATED)
+    write_zip('images.docx', [
+        ('word/document.xml', IMAGES_DOCUMENT),
+        ('word/_rels/document.xml.rels', IMAGES_RELS),
+        ('word/media/image1.png', PNG_1X1),
+        ('word/media/photo.JPG', b'\xff\xd8\xff\xd9'),
+        ('word/media/image3.emf', b'\x01\x00\x00\x00'),
     ], zipfile.ZIP_DEFLATED)
     write_zip('no-document.docx', [('hello.txt', 'hello')], zipfile.ZIP_DEFLATED)
 

@@ -22,6 +22,9 @@
 //   key 'PageBreak' ends the paragraph with a page break (Cmd/Ctrl+Enter)
 //   key 'OpenHeader' / 'OpenFooter' moves the caret into the (new, empty) page
 //   header / footer; key 'Escape' returns it to the body where it was.
+//   { type: 'image',  id, width, height, delay } paste picture `id` (size in pt,
+//                                          0 = natural) into the caret's empty
+//                                          paragraph; the executor adds `src`
 //   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
 //                                          `style` ({ family?, size?, bold, italic,
 //                                          underline, strike }) it is pasted in that
@@ -117,6 +120,9 @@
     nextBack: 195, // measured (170–222)
     pasteLink: [2600, 0.35, 1200, 6000], // assumed: switch to the source tab, copy the link, come back, paste
     sectionOpen: [1800, 0.35, 900, 4000], // assumed: moving into the header/footer
+    // The writer leaves for the picture (finds it, copies it, comes back)
+    // and only then pastes it: a long pause before every image. Assumed.
+    imagePaste: [30000, 0.4, 15000, 75000],
     menuTrip: [3200, 0.3, 2000, 6000], // assumed: Insert › Page elements › Page numbers
     fontKey: [300, 0.4, 120, 700], // assumed: the styled first character of a paragraph, like a keystroke
 
@@ -540,7 +546,14 @@
     if (Object.keys(fmt).length) out.fmt = fmt;
     return out;
   }
+  function normalizeImage(b) {
+    const n = (x) => (typeof x === 'number' && x > 0 && isFinite(x) ? x : 0);
+    const out = { type: 'image', id: String(b.id), width: n(b.width), height: n(b.height), align: ALIGNS.includes(b.align) ? b.align : 'left' };
+    if (b.pageBreak) out.pageBreak = true;
+    return out;
+  }
   function normalizeBlock(b) {
+    if (b && b.type === 'image') return normalizeImage(b);
     if (b && b.type === 'table') {
       const cols = b.rows.length ? b.rows[0].length : 0;
       const out = {
@@ -596,6 +609,7 @@
     return out;
   }
   function blockParagraphs(block) {
+    if (block.type === 'image') return [];
     if (block.type !== 'table') return [block];
     const out = [];
     for (const row of block.rows) for (const cell of row) out.push(...cell.paragraphs);
@@ -925,6 +939,29 @@
       });
     }
 
+    // A picture gets a paragraph of its own (plain, with the picture's
+    // alignment) and is pasted into it after a long pause.
+    function image(b, needEnter, pauseMs) {
+      if (needEnter) {
+        if (b.pageBreak) {
+          if (c.style !== 'normal') c.style = 'normal';
+          key('PageBreak', P.enterKey);
+        } else enter();
+      }
+      pendingPause = pauseMs;
+      if (rich) {
+        const f = effFont({});
+        push({ type: 'para', style: 'normal', align: b.align, fmt: {}, text: '', empty: true, font: styleOf(f, 0), delay: human(P.fontKey) });
+        Object.assign(c, { fontKey: fkey(f), bold: false, italic: false, underline: false, strike: false });
+      } else {
+        if (c.list) leaveList();
+        if (c.style !== 'normal') format('style:normal');
+        if (c.align !== b.align) format('align:' + b.align);
+      }
+      Object.assign(c, { style: 'normal', align: b.align, list: null });
+      push({ type: 'image', id: b.id, width: b.width, height: b.height, delay: human(P.imagePaste) });
+    }
+
     function table(t) {
       const cols = t.rows.length ? t.rows[0].length : 0;
       if (!cols) return false;
@@ -983,6 +1020,9 @@
       Object.assign(c, body);
     } else if (block.type === 'table') {
       if (table(block)) c.afterTable = true;
+    } else if (block.type === 'image') {
+      image(block, c.started && !c.afterTable, c.started ? think(P.paragraphPause) + rest : 0);
+      c.afterTable = false;
     } else {
       const needEnter = c.started && !c.afterTable;
       paragraph(block, needEnter, c.started ? think(P.paragraphPause) + rest : 0);
@@ -1077,6 +1117,7 @@
     actions.forEach((a, i) => {
       if (a.type === 'char') {
         if (a.ch === '\n') fail('newline as a character', i);
+        if (par.image) fail('text typed next to an image', i);
         par.chars.push([a.ch, bits, cf]);
         par.implicit = false;
       } else if (a.type === 'paste') {
@@ -1105,6 +1146,14 @@
         bits = bitsOf(a.font || {});
         cf = fontKeyOf(a.font) || cf;
         for (const ch of Array.from(a.text || '')) par.chars.push([ch, bits, cf]);
+        par.implicit = false;
+      } else if (a.type === 'image') {
+        // The picture is the only thing in its paragraph.
+        if (tbl || inSec) fail('image inside a table or section', i);
+        if (par.chars.length || par.image) fail('image pasted into a non-empty paragraph', i);
+        if (par.list || par.style !== 'normal') fail('image in a list or heading', i);
+        if (!a.id) fail('image without an id', i);
+        par.image = { id: a.id, width: a.width, height: a.height };
         par.implicit = false;
       } else if (a.type === 'key' && a.key === 'PageBreak') {
         if (tbl || inSec) fail('page break inside a table or section', i);
@@ -1190,6 +1239,7 @@
     if (last && !last.table && last.implicit) blocks.pop();
 
     const toParagraph = (p) => {
+      if (p.image) return normalizeImage(Object.assign({ align: p.align, pageBreak: p.brk }, p.image));
       const runs = [];
       let lastKey = null;
       for (const [ch, b, f] of p.chars) {

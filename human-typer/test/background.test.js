@@ -125,6 +125,29 @@ test('types a whole formatted document into an empty Google Doc and verifies it'
   assert.strictEqual(job.progress.blocksDone, job.progress.blocksTotal);
 });
 
+test('pictures: data is stored apart from the document and handed over with the image action', async () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgo=';
+  const source = { blocks: [P('Önce.'), { type: 'image', id: 'img1', width: 100, height: 50, align: 'center' }, P('Sonra.')], images: { img1: PNG } };
+  live = { blocks: [] };
+  Doc.parseDocx = async () => ({ doc: live, warnings: [] });
+  const ui = connect();
+  await ui.send({ type: 'job:create', doc: source, fileName: 'resimli.docx', options: { typoRate: 0, layout: 'auto' }, schedule: { mode: 'now' } });
+  const job = ui.last().job;
+  assert.strictEqual(job.progress.blocksTotal, 3);
+  assert.strictEqual(JSON.parse(store['ht:doc']).images, undefined);
+  assert.deepStrictEqual(JSON.parse(store['ht:images']), { img1: PNG });
+  const all = [];
+  Doc.parseDocx = async () => ({ doc: Planner.simulateDoc(all), warnings: [] });
+  const end = await drive(job.id, (reply) => all.push(...reply.actions));
+  assert.ok(end.done);
+  const image = all.filter((a) => a.type === 'image');
+  assert.strictEqual(image.length, 1);
+  assert.strictEqual(image[0].src, PNG);
+  assert.strictEqual(ui.last().job.message, 'msg.verified');
+  await ui.send({ type: 'job:clear' });
+  assert.strictEqual(store['ht:images'], undefined);
+});
+
 test('fills only the missing parts when the Google Doc already holds the template', async () => {
   const template = {
     blocks: [P('Başvuru Formu', { style: 'h1' }), P('Ad Soyad:'), { type: 'table', rows: [[cell('Soru'), cell('Cevap')], [cell('Şehir'), cell('')]] }, P('')],

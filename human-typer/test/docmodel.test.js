@@ -120,7 +120,8 @@ test('validate reports problems', () => {
       para([{ text: 'x' }], { style: 'big', align: 'middle', list: { kind: 'bullet', level: 9 } }),
       { type: 'table', rows: [[{ paragraphs: [para([])] }], []] },
       { type: 'table', rows: [[{ paragraphs: [] }]] },
-      { type: 'image' },
+      { type: 'video' },
+      { type: 'image', id: 'img1', align: 'left' },
     ],
   });
   const has = (re) => assert.ok(problems.some((p) => re.test(p)), `${re} not in ${problems}`);
@@ -134,6 +135,7 @@ test('validate reports problems', () => {
   has(/blocks\[2\]\.rows\[1\]: table is not rectangular/);
   has(/blocks\[3\]\.rows\[0\]\[0\]\.paragraphs/);
   has(/blocks\[4\]: unknown block type/);
+  has(/blocks\[5\]\.id: no image data/);
 });
 
 test('parsePlain makes one normal paragraph per non-blank line', () => {

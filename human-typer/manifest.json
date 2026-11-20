@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "default_locale": "en",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "storage", "alarms"],
+  "permissions": ["sidePanel", "storage", "unlimitedStorage", "alarms"],
   "host_permissions": [
     "https://docs.google.com/*",
     "https://*.googleusercontent.com/*"

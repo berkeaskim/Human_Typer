@@ -8,7 +8,7 @@ const Planner = self.HumanTyperPlanner;
 const Scheduler = self.HumanTyperScheduler;
 const Fill = self.HumanTyperFill;
 
-const K = { job: 'ht:job', doc: 'ht:doc', fill: 'ht:fill' };
+const K = { job: 'ht:job', doc: 'ht:doc', fill: 'ht:fill', images: 'ht:images' };
 const ALARM = { session: 'ht-session', watch: 'ht-watch' };
 const DOC_URL = /^https:\/\/docs\.google\.com\/document\/((?:u\/\d+\/)?)d\/([\w-]+)/;
 const ports = new Set();
@@ -76,7 +76,7 @@ async function exportDoc(url) {
   if (!m) throw new Error('not_a_google_doc');
   const res = await fetch(`https://docs.google.com/document/${m[1]}d/${m[2]}/export?format=docx`, { credentials: 'include', cache: 'no-store' });
   if (!res.ok) throw new Error('export_failed_' + res.status);
-  return (await Doc.parseDocx(await res.arrayBuffer())).doc;
+  return (await Doc.parseDocx(await res.arrayBuffer(), { images: false })).doc; // text only: pictures are not compared
 }
 
 // Docs rewrites straight quotes and a few other characters as you type.
@@ -85,9 +85,11 @@ const FOLD = [[/[‘’‚′]/g, "'"], [/[“”„″]/g, '"'], [/[–—]/g, 
 const fold = (s) => FOLD.reduce((t, [re, to]) => t.replace(re, to), s);
 function foldDoc(doc) {
   const para = (p) => Object.assign({}, p, { runs: p.runs.map((r) => Object.assign({}, r, { text: fold(r.text) })) });
+  // A picture sits in a paragraph of its own, which the export shows as empty.
+  const blank = (b) => ({ type: 'paragraph', style: 'normal', list: null, align: b.align, runs: [] });
   return {
     blocks: doc.blocks.map((b) =>
-      b.type === 'table' ? { type: 'table', rows: b.rows.map((row) => row.map((c) => ({ paragraphs: c.paragraphs.map(para) }))) } : para(b)
+      b.type === 'image' ? blank(b) : b.type === 'table' ? { type: 'table', rows: b.rows.map((row) => row.map((c) => ({ paragraphs: c.paragraphs.map(para) }))) } : para(b)
     ),
   };
 }
@@ -138,7 +140,11 @@ async function createJob(msg) {
     sessions: [],
     sessionIndex: 0,
   };
+  // Picture data is kept apart from the document, which is read for every block.
+  const images = source.images || {};
+  delete source.images;
   await set(K.doc, source);
+  await set(K.images, images);
 
   // An existing template in the target document means "fill in", otherwise
   // the whole document is typed.
@@ -296,6 +302,10 @@ async function buildCompose(job, fresh) {
     // Docs' spelling autocorrect would "fix" typos the document keeps.
     pre.push({ type: 'noAutocorrect', delay: 500 });
     pre.push({ type: 'key', key: 'DocEnd', delay: 800 });
+  }
+  if (planned.actions.some((a) => a.type === 'image')) {
+    const images = (await get(K.images)) || {};
+    for (const a of planned.actions) if (a.type === 'image') a.src = images[a.id];
   }
   return { pre, actions: planned.actions, carry: planned.carry };
 }
@@ -465,7 +475,7 @@ chrome.runtime.onConnect.addListener((port) => {
         return;
       case 'job:clear':
         await chrome.alarms.clearAll();
-        await chrome.storage.local.remove([K.job, K.doc, K.fill]);
+        await chrome.storage.local.remove([K.job, K.doc, K.fill, K.images]);
         return pushState(null);
       case 'selftest':
         return port.postMessage({ type: 'selftest:result', lines: await selfTest() });

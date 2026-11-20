@@ -465,6 +465,70 @@
     return true;
   }
 
+  // --- pictures ---------------------------------------------------------------
+  // `a.src` is a data URL. First try: Docs' own clipboard markup for an inline
+  // picture, which carries the size from the source document. If nothing
+  // lands (the caret does not move), the picture is pasted as a file, the way
+  // a copied screenshot arrives; Docs then sizes it itself. Not live-tested
+  // yet: the wait before the fallback is long so a slow upload is not pasted
+  // twice.
+  const MAX_IMAGE_PX = [624, 860]; // text area of a portrait A4/Letter page
+  function dataBlob(src) {
+    const m = /^data:([^;,]+);base64,(.*)$/.exec(src);
+    if (!m) return null;
+    const bin = atob(m[2]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: m[1] });
+  }
+  function imageHtml(src, w, h) {
+    const size = w && h;
+    return (
+      '<meta charset="utf-8"><b style="font-weight:normal;" id="' + guid() + '"><span style="' + spanCss({}) + '">' +
+      '<span style="border:none;display:inline-block;overflow:hidden;' + (size ? 'width:' + w + 'px;height:' + h + 'px;' : '') + '">' +
+      '<img src="' + esc(src) + '"' + (size ? ' width="' + w + '" height="' + h + '"' : '') + ' style="margin-left:0px;margin-top:0px;" /></span></span></b>'
+    );
+  }
+  async function pasteImage(a) {
+    const t = target();
+    if (!t) return false;
+    const blob = a.src ? dataBlob(a.src) : null;
+    if (!blob) return true; // picture data lost: go on with the text
+    let w = (a.width || 0) * 4 / 3;
+    let h = (a.height || 0) * 4 / 3;
+    if (!(w > 0 && h > 0)) {
+      try {
+        const bm = await createImageBitmap(blob);
+        [w, h] = [bm.width, bm.height];
+        bm.close();
+      } catch (e) {
+        w = h = 0;
+      }
+    }
+    const k = w && h ? Math.min(1, MAX_IMAGE_PX[0] / w, MAX_IMAGE_PX[1] / h) : 0;
+    w = Math.round(w * k);
+    h = Math.round(h * k);
+    const fills = [
+      (data) => {
+        data.setData('text/html', imageHtml(a.src, w, h));
+        data.setData('text/plain', '');
+      },
+      (data) => data.items.add(new t.win.File([blob], 'image.' + blob.type.split('/')[1], { type: blob.type })),
+    ];
+    for (const fill of fills) {
+      const before = await stable();
+      const data = new t.win.DataTransfer();
+      fill(data);
+      t.el.dispatchEvent(new t.win.ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: data }));
+      // The caret jumps to the far side of the picture once it is in.
+      if (await settle(before, 15000)) {
+        await stable(3000);
+        return true;
+      }
+    }
+    return true; // best effort: a picture that will not paste does not stop the job
+  }
+
   // --- one planned action ---------------------------------------------------
   // Returns true when the action was dispatched. May be async (tables).
   function perform(action) {
@@ -489,6 +553,8 @@
         return insertPageNumbers(action.where, action.skipFirst);
       case 'paste':
         return pasteText(action.text, action.style);
+      case 'image':
+        return pasteImage(action);
       default:
         return false;
     }

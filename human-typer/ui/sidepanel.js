@@ -225,7 +225,7 @@
   function setDoc(doc, fileName, warnings, pasted) {
     var stats = null;
     try { stats = Doc.stats ? Doc.stats(doc) : null; } catch (e) { stats = null; }
-    if (!doc || !doc.blocks || !doc.blocks.length || (stats && !stats.chars && !stats.tables)) {
+    if (!doc || !doc.blocks || !doc.blocks.length || (stats && !stats.chars && !stats.tables && !stats.images)) {
       ui.docError = { key: 'doc.err.empty' };
       ui.loading = null;
       return false;
@@ -538,6 +538,12 @@
         el('span', { class: 'outline__text', text: t('doc.table', { rows: rows, cols: cols }) })
       ]);
     }
+    if (block.type === 'image') {
+      return el('li', { class: 'outline__row outline__row--table' }, [
+        el('span', { class: 'outline__tag', 'aria-hidden': 'true', text: '▣' }),
+        el('span', { class: 'outline__text', text: t('doc.image') })
+      ]);
+    }
     var text = paragraphText(block).replace(/\s+/g, ' ').trim();
     var style = block.style || 'normal';
     var tag = '';
@@ -600,6 +606,7 @@
       parts.push(t('doc.words', { count: s.words || 0 }));
       parts.push(t('doc.paragraphs', { count: s.paragraphs || 0 }));
       if (s.tables) parts.push(t('doc.tables', { count: s.tables }));
+      if (s.images) parts.push(t('doc.images', { count: s.images }));
     }
     if (ui.doc.header) parts.push(t('doc.header'));
     if (ui.doc.footer) parts.push(t('doc.footer'));

@@ -3,7 +3,10 @@
 // content script, service worker) and under `node --test`.
 //
 //   Doc       = { blocks: Block[] }
-//   Block     = Paragraph | Table
+//   Block     = Paragraph | Table | Image
+//   Image     = { type: 'image', id, width, height (pt; 0 = natural size),
+//                 align, pageBreak?: true }; Doc.images = { id: data URL }
+//                 (body level only; present only when the doc has pictures)
 //   Paragraph = { type: 'paragraph', style, list, align, runs: Run[] }
 //   Run       = { text, bold?: true, italic?: true, underline?: true, strike?: true,
 //                 font?: string, size?: number (pt) }
@@ -138,18 +141,36 @@
     return out;
   }
 
+  const IMAGE_URL = /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+=*$/;
+  function cleanDim(x) {
+    const n = Math.round(Number(x) * 100) / 100;
+    return n > 0 && n <= 5000 ? n : 0;
+  }
+
   // Returns a new Doc that satisfies every rule of the model. Never throws.
   function normalize(doc) {
     const blocks = [];
+    const src = doc && doc.images && typeof doc.images === 'object' ? doc.images : {};
+    const images = {};
     for (const b of doc && Array.isArray(doc.blocks) ? doc.blocks : []) {
       if (!b) continue;
-      if (b.type === 'paragraph') blocks.push(...normalizeParagraph(b));
+      if (b.type === 'image') {
+        // An image without (valid) data is dropped.
+        if (typeof b.id !== 'string' || !Object.prototype.hasOwnProperty.call(src, b.id) || typeof src[b.id] !== 'string' || !IMAGE_URL.test(src[b.id])) continue;
+        images[b.id] = src[b.id];
+        const width = cleanDim(b.width);
+        const height = cleanDim(b.height);
+        const img = { type: 'image', id: b.id, width: width && height ? width : 0, height: width && height ? height : 0, align: ALIGNS.includes(b.align) ? b.align : 'left' };
+        if (b.pageBreak) img.pageBreak = true;
+        blocks.push(img);
+      } else if (b.type === 'paragraph') blocks.push(...normalizeParagraph(b));
       else if (b.type === 'table') {
         const table = normalizeTable(b);
         if (table) blocks.push(table);
       }
     }
     const out = { blocks };
+    if (Object.keys(images).length) out.images = images;
     for (const kind of ['header', 'footer']) {
       const src = doc && doc[kind] && Array.isArray(doc[kind].paragraphs) ? doc[kind].paragraphs : [];
       const paragraphs = [];
@@ -215,6 +236,11 @@
     doc.blocks.forEach((b, i) => {
       const path = `blocks[${i}]`;
       if (b && b.type === 'paragraph') return validateParagraph(b, path, out);
+      if (b && b.type === 'image') {
+        if (!doc.images || typeof doc.images[b.id] !== 'string') out.push(`${path}.id: no image data for "${b.id}"`);
+        if (!ALIGNS.includes(b.align)) out.push(`${path}.align: invalid align "${b.align}"`);
+        return;
+      }
       if (!b || b.type !== 'table') return out.push(`${path}: unknown block type`);
       if (!Array.isArray(b.rows) || b.rows.length === 0) {
         return out.push(`${path}.rows: must be a non-empty array`);
@@ -247,6 +273,7 @@
     return doc.blocks
       .map((b) => {
         if (b.type === 'paragraph') return paragraphText(b);
+        if (b.type === 'image') return '';
         return b.rows
           .map((row) => row.map((cell) => cell.paragraphs.map(paragraphText).join(' ')).join('\t'))
           .join('\n');
@@ -275,7 +302,8 @@
       s.words += (text.match(/\S+/g) || []).length;
     };
     for (const b of doc.blocks) {
-      if (b.type === 'paragraph') {
+      if (b.type === 'image') s.images = (s.images || 0) + 1; // only present when there are pictures
+      else if (b.type === 'paragraph') {
         s.paragraphs++;
         count(b);
       } else {

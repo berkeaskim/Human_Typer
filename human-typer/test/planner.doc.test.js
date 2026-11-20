@@ -554,3 +554,34 @@ test('a font change on a run that starts with a space types the space, then past
   assert.ok(i > 0 && actions[i - 1].type === 'char' && actions[i - 1].ch === ' ');
   assert.strictEqual(actions[i].style.size, 11);
 });
+
+test('an image gets its own paragraph and is pasted after a long pause', () => {
+  const IMG = (extra) => Object.assign({ type: 'image', id: 'img1', width: 216, height: 144, align: 'center' }, extra);
+  const run = (text) => ({ text, font: 'Calibri', size: 11 });
+  const RP = (text, extra) => Object.assign({ type: 'paragraph', style: 'normal', list: null, align: 'left', runs: [run(text)], fmt: { after: 6 } }, extra);
+  const docs = [
+    { rich: true, font: { family: 'Calibri', size: 11 }, blocks: [RP('Heading', { style: 'h1' }), IMG(), RP('Bulleted', { list: { kind: 'bullet', level: 1 } }), IMG({ id: 'img2', width: 0, height: 0, align: 'left', pageBreak: true }), IMG(), { type: 'table', rows: [[{ paragraphs: [RP('A')] }]] }, IMG(), RP('End')] },
+    { blocks: [IMG(), H('h2', 'Title'), IMG({ align: 'left' }), LI('number', 2, 'item'), IMG(), T([cell(P('x'))]), IMG(), P('End', { align: 'right' })] },
+  ];
+  for (const doc of docs) {
+    for (let seed = 1; seed <= 10; seed++) {
+      const all = [];
+      let carry = initialCarry();
+      for (let k = 0; k < itemCount(doc); k++) {
+        const res = planBlock(doc, k, { seed, typoRate: 0.1 }, carry);
+        all.push(...res.actions);
+        carry = res.carry;
+      }
+      const expected = normalizeDoc(doc);
+      delete expected.font;
+      delete expected.rich;
+      assert.deepStrictEqual(simulateDoc(all, { fonts: Boolean(doc.rich) }), expected);
+      const images = all.filter((a) => a.type === 'image');
+      assert.strictEqual(images.length, 4);
+      for (const a of images) assert.ok(a.delay >= 15000 && a.delay <= 75000 + 60000, String(a.delay));
+      assert.strictEqual(all.filter((a) => a.key === 'PageBreak').length, doc.rich ? 1 : 0);
+    }
+  }
+  const est = estimate(docs[0], { seed: 3 });
+  assert.ok(est.ms > 4 * 15000);
+});

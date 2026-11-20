@@ -109,6 +109,48 @@
   function hasDescendant(node, name) {
     return (node.children || []).some((c) => c.name === name || hasDescendant(c, name));
   }
+  function descendant(node, name) {
+    for (const c of node.children || []) {
+      const hit = c.name === name ? c : descendant(c, name);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // --- images ----------------------------------------------------------------
+  // A picture in a drawing (a:blip) or in VML (v:imagedata): the relationship
+  // id of its file and its size on the page in points (0 when not stated).
+  // Linked (not embedded) pictures and shapes without a picture give null.
+  const UNIT_PT = { pt: 1, in: 72, cm: 28.3465, mm: 2.83465, px: 0.75 };
+  function imageRef(node) {
+    const blip = descendant(node, 'a:blip');
+    const data = blip ? null : descendant(node, 'v:imagedata');
+    const rid = blip ? blip.attrs['r:embed'] : data && data.attrs['r:id'];
+    if (!rid) return null;
+    let width = 0;
+    let height = 0;
+    if (blip) {
+      const ext = descendant(node, 'wp:extent');
+      if (ext) [width, height] = [Number(ext.attrs.cx) / 12700, Number(ext.attrs.cy) / 12700];
+    } else {
+      const shape = descendant(node, 'v:shape');
+      const dim = (name) => {
+        const m = new RegExp('(?:^|;)\\s*' + name + '\\s*:\\s*([\\d.]+)(pt|in|cm|mm|px)', 'i').exec((shape && shape.attrs.style) || '');
+        return m ? Number(m[1]) * UNIT_PT[m[2].toLowerCase()] : 0;
+      };
+      [width, height] = [dim('width'), dim('height')];
+    }
+    const ok = width > 0 && height > 0 && isFinite(width + height);
+    return { rid, width: ok ? width : 0, height: ok ? height : 0 };
+  }
+  // Formats both the browser and Docs can show; EMF/WMF/TIFF are left out.
+  const IMAGE_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+  const MAX_IMAGE_CHARS = 40e6; // all pictures together, as base64 (extension messages stop at 64 MB)
+  function base64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
 
   // --- styles and numbering ------------------------------------------------
   // On/off run property: true, false, or undefined when not specified.
@@ -364,6 +406,22 @@
     const charStyles = ctx.styles.chain(val(rPr, 'w:rStyle')).map((s) => s.rProps);
     const props = mergeProps(base, ...charStyles.reverse(), runProps(rPr));
     let text = '';
+    const flush = () => {
+      if (!text) return;
+      // Body text font/size tally, by characters (see bodyFont).
+      if (ctx.normal && ctx.fonts) {
+        const k = (props.font || '') + '|' + (props.size || '');
+        ctx.fonts.set(k, (ctx.fonts.get(k) || 0) + text.replace(/\s/g, '').length);
+      }
+      const run = { text };
+      for (const f of ['bold', 'italic', 'underline', 'strike']) if (props[f]) run[f] = true;
+      const family = props.font && props.font.startsWith('theme:') ? ctx.theme[props.font.slice(6)] : props.font;
+      if (family) run.font = family;
+      if (props.size) run.size = props.size;
+      runs.push(run);
+      text = '';
+    };
+    if (inLink) props.underline = false;
     // Complex fields: begin, instruction, separate, cached result, end.
     const hidden = () => ctx.fld && (!ctx.fld.result || ctx.fld.page);
     for (const c of r.children) {
@@ -400,9 +458,20 @@
         case 'w:drawing':
         case 'w:pict':
         case 'w:object':
-        case 'mc:AlternateContent':
-          ctx.skipped[hasDescendant(c, 'w:txbxContent') ? 'textBoxes' : 'images']++;
+        case 'mc:AlternateContent': {
+          if (hasDescendant(c, 'w:txbxContent')) {
+            ctx.skipped.textBoxes++;
+            break;
+          }
+          // A picture in a body paragraph is kept as a marker run at its
+          // place in the text (see splitAtImages); elsewhere it is skipped.
+          const image = ctx.images ? imageRef(c) : null;
+          if (image) {
+            flush();
+            runs.push({ text: '', image });
+          } else ctx.skipped.images++;
           break;
+        }
         case 'w:footnoteReference':
           ctx.skipped.footnotes++;
           break;
@@ -417,19 +486,7 @@
           break;
       }
     }
-    if (!text) return;
-    // Body text font/size tally, by characters (see bodyFont).
-    if (ctx.normal && ctx.fonts) {
-      const k = (props.font || '') + '|' + (props.size || '');
-      ctx.fonts.set(k, (ctx.fonts.get(k) || 0) + text.replace(/\s/g, '').length);
-    }
-    const run = { text };
-    if (inLink) props.underline = false;
-    for (const f of ['bold', 'italic', 'underline', 'strike']) if (props[f]) run[f] = true;
-    const family = props.font && props.font.startsWith('theme:') ? ctx.theme[props.font.slice(6)] : props.font;
-    if (family) run.font = family;
-    if (props.size) run.size = props.size;
-    runs.push(run);
+    flush();
   }
 
   // Paragraphs of a table cell; nested tables are flattened to their text.
@@ -453,6 +510,8 @@
 
   function convertTable(tbl, ctx) {
     const rows = [];
+    const images = ctx.images; // pictures inside a table are skipped
+    ctx.images = false;
     for (const tr of kids(tbl, 'w:tr')) {
       const row = [];
       const before = parseInt(val(kid(tr, 'w:trPr'), 'w:gridBefore'), 10) || 0;
@@ -472,11 +531,45 @@
       }
       if (row.length) rows.push(row);
     }
+    ctx.images = images;
     const out = { type: 'table', rows };
     // Column widths in points, from the table grid.
     const widths = kids(kid(tbl, 'w:tblGrid'), 'w:gridCol').map((g) => Number(g.attrs['w:w']) / 20);
     if (widths.length && widths.every((w) => w > 0)) out.widths = widths;
     return out;
+  }
+
+  // A picture is a block of its own: "text [picture] text" becomes a
+  // paragraph, an image block and another paragraph. Text that is only
+  // whitespace between pictures is dropped.
+  function splitAtImages(p, out) {
+    let seg = [];
+    let first = true;
+    const flush = () => {
+      if (seg.some((r) => /\S/.test(r.text))) {
+        const q = Object.assign({}, p, { runs: seg });
+        if (!first && q.fmt && q.fmt.pageBreak) {
+          q.fmt = Object.assign({}, q.fmt);
+          delete q.fmt.pageBreak;
+          if (!Object.keys(q.fmt).length) delete q.fmt;
+        }
+        out.push(q);
+        first = false;
+      }
+      seg = [];
+    };
+    for (const r of p.runs) {
+      if (!r.image) {
+        seg.push(r);
+        continue;
+      }
+      flush();
+      const b = Object.assign({ type: 'image', align: p.align }, r.image);
+      if (first && p.fmt && p.fmt.pageBreak) b.pageBreak = true;
+      first = false;
+      out.push(b);
+    }
+    flush();
   }
 
   function collectBlocks(container, ctx, out) {
@@ -490,7 +583,8 @@
           if (!last.text) p.runs.pop();
           ctx.breakNext = true;
         }
-        out.push(p);
+        if (p.runs.some((r) => r.image)) splitAtImages(p, out);
+        else out.push(p);
       }
       else if (c.name === 'w:tbl') out.push(convertTable(c, ctx));
       else if (TRANSPARENT.has(c.name)) collectBlocks(c, ctx, out);
@@ -531,8 +625,9 @@
   }
 
   // Resolves to { doc, warnings }. Rejects with an Error when the input is not
-  // a readable .docx file.
-  async function parseDocx(input) {
+  // a readable .docx file. opts.images === false: pictures are not read
+  // (they are counted as skipped), as before pictures were supported.
+  async function parseDocx(input, opts) {
     const zip = api.readZip(input);
     const decoder = new TextDecoder('utf-8');
     const readText = async (path) => (zip.has(path) ? decoder.decode(await zip.read(path)) : '');
@@ -574,8 +669,46 @@
         firstPage: false,
       },
     };
-    const blocks = [];
+    const relsXml = await readText(dir + '_rels/' + path.slice(dir.length) + '.rels');
+    const rels = new Map(kids(kid(relsXml ? parseXml(relsXml) : null, 'Relationships'), 'Relationship').map((r) => [r.attrs.Id, r.attrs.Target]));
+    let blocks = [];
+    ctx.images = !(opts && opts.images === false);
     collectBlocks(body, ctx, blocks);
+    ctx.images = false;
+
+    // Picture files become data URLs in Doc.images; a file used twice is
+    // stored once. Unreadable or unsupported pictures are skipped.
+    const images = {};
+    const ids = new Map();
+    let imageChars = 0;
+    const kept = [];
+    for (const b of blocks) {
+      if (b.type !== 'image') {
+        kept.push(b);
+        continue;
+      }
+      const target = rels.get(b.rid) || '';
+      delete b.rid;
+      const part = target.startsWith('/') ? target.slice(1) : dir + target;
+      const mime = IMAGE_MIME[((/\.([a-z0-9]+)$/i.exec(part) || [])[1] || '').toLowerCase()];
+      let id = ids.get(part);
+      if (!id && mime && zip.has(part)) {
+        const data = base64(await zip.read(part));
+        if (imageChars + data.length <= MAX_IMAGE_CHARS) {
+          imageChars += data.length;
+          id = 'img' + (ids.size + 1);
+          ids.set(part, id);
+          images[id] = 'data:' + mime + ';base64,' + data;
+        }
+      }
+      if (!id) {
+        ctx.skipped.images++;
+        continue;
+      }
+      b.id = id;
+      kept.push(b);
+    }
+    blocks = kept;
 
     // Header and footer of the last section (the one the body ends in; in
     // practice the whole document). Tables in them are flattened to their
@@ -585,8 +718,6 @@
     const sect = kid(body, 'w:sectPr');
     if (sect) {
       ctx.fonts = null;
-      const relsXml = await readText(dir + '_rels/' + path.slice(dir.length) + '.rels');
-      const rels = new Map(kids(kid(relsXml ? parseXml(relsXml) : null, 'Relationships'), 'Relationship').map((r) => [r.attrs.Id, r.attrs.Target]));
       for (const [kind, tag, root] of [['header', 'w:headerReference', 'w:hdr'], ['footer', 'w:footerReference', 'w:ftr']]) {
         const refs = kids(sect, tag);
         const ref = refs.find((r) => (r.attrs['w:type'] || 'default') === 'default');
@@ -623,6 +754,7 @@
     // formatting (spacing, fonts, sizes), as typed by planBlock's rich mode.
     if (font) extra.font = font;
     extra.rich = true;
+    if (ids.size) extra.images = images;
     const out = { doc: api.normalize(Object.assign({ blocks }, extra)), warnings: buildWarnings(ctx.skipped) };
     if (font) out.font = font;
     return out;
