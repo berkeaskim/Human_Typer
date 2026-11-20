@@ -505,7 +505,8 @@
         w = h = 0;
       }
     }
-    const k = w && h ? Math.min(1, MAX_IMAGE_PX[0] / w, MAX_IMAGE_PX[1] / h) : 0;
+    const maxW = a.maxWidth > 0 ? Math.min(MAX_IMAGE_PX[0], (a.maxWidth * 4) / 3) : MAX_IMAGE_PX[0];
+    const k = w && h ? Math.min(1, maxW / w, MAX_IMAGE_PX[1] / h) : 0;
     w = Math.round(w * k);
     h = Math.round(h * k);
     const fills = [

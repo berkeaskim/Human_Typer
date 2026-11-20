@@ -89,7 +89,7 @@ function foldDoc(doc) {
   const blank = (b) => ({ type: 'paragraph', style: 'normal', list: null, align: b.align, runs: [] });
   return {
     blocks: doc.blocks.map((b) =>
-      b.type === 'image' ? blank(b) : b.type === 'table' ? { type: 'table', rows: b.rows.map((row) => row.map((c) => ({ paragraphs: c.paragraphs.map(para) }))) } : para(b)
+      b.type === 'image' ? blank(b) : b.type === 'table' ? { type: 'table', rows: b.rows.map((row) => row.map((c) => ({ paragraphs: c.paragraphs.map((p) => (p.type === 'image' ? blank(p) : para(p))) }))) } : para(b)
     ),
   };
 }

@@ -375,7 +375,7 @@ test('links are pasted one by one, the rest is typed', () => {
 
   const doc = {
     blocks: [
-      H('h1', 'References'),
+      H('h1', 'Further reading'),
       P([{ text: 'Smith, J. (2020). A study. ' }, { text: 'Journal', italic: true }, { text: '. https://doi.org/10.1000/xyz123' }]),
       P('Doe, A. (2021). Retrieved from https://example.com/page?id=4 and http://b.org/c.'),
     ],
@@ -560,7 +560,7 @@ test('an image gets its own paragraph and is pasted after a long pause', () => {
   const run = (text) => ({ text, font: 'Calibri', size: 11 });
   const RP = (text, extra) => Object.assign({ type: 'paragraph', style: 'normal', list: null, align: 'left', runs: [run(text)], fmt: { after: 6 } }, extra);
   const docs = [
-    { rich: true, font: { family: 'Calibri', size: 11 }, blocks: [RP('Heading', { style: 'h1' }), IMG(), RP('Bulleted', { list: { kind: 'bullet', level: 1 } }), IMG({ id: 'img2', width: 0, height: 0, align: 'left', pageBreak: true }), IMG(), { type: 'table', rows: [[{ paragraphs: [RP('A')] }]] }, IMG(), RP('End')] },
+    { rich: true, font: { family: 'Calibri', size: 11 }, blocks: [RP('Heading', { style: 'h1' }), IMG(), RP('Bulleted', { list: { kind: 'bullet', level: 1 } }), IMG({ id: 'img2', width: 0, height: 0, align: 'left', pageBreak: true }), IMG(), { type: 'table', widths: [100, 300], rows: [[{ paragraphs: [IMG({ id: 'c1' }), RP('caption')] }, { paragraphs: [RP('B', { list: { kind: 'bullet', level: 0 } }), IMG({ id: 'c2', align: 'left' })] }]] }, IMG(), RP('End')] },
     { blocks: [IMG(), H('h2', 'Title'), IMG({ align: 'left' }), LI('number', 2, 'item'), IMG(), T([cell(P('x'))]), IMG(), P('End', { align: 'right' })] },
   ];
   for (const doc of docs) {
@@ -577,11 +577,45 @@ test('an image gets its own paragraph and is pasted after a long pause', () => {
       delete expected.rich;
       assert.deepStrictEqual(simulateDoc(all, { fonts: Boolean(doc.rich) }), expected);
       const images = all.filter((a) => a.type === 'image');
-      assert.strictEqual(images.length, 4);
+      assert.strictEqual(images.length, doc.rich ? 6 : 4);
+      if (doc.rich) assert.deepStrictEqual(images.filter((a) => a.maxWidth).map((a) => [a.id, a.maxWidth]), [['c1', 88], ['c2', 288]]);
       for (const a of images) assert.ok(a.delay >= 15000 && a.delay <= 75000 + 60000, String(a.delay));
       assert.strictEqual(all.filter((a) => a.key === 'PageBreak').length, doc.rich ? 1 : 0);
     }
   }
   const est = estimate(docs[0], { seed: 3 });
   assert.ok(est.ms > 4 * 15000);
+});
+
+test('reference-list entries are pasted, not typed, until the next heading', () => {
+  const { referenceBlocks } = require('../planner.js');
+  const ref = [{ text: 'Smith, J. (2020) ' }, i('A long title of the book'), { text: '. London: Sage. ' }];
+  const mk = (rich) => ({
+    rich,
+    blocks: [P('Intro text here.'), H('h1', '7. References'), P(ref), P('  Doe, A. (2019) Indented entry.'), P([]), H('h1', 'Appendix'), P('Typed again.'), P('Kaynakça', { runs: [b('Kaynakça')] }), LI('number', 0, 'Yılmaz, A. (2021) Bir kaynak.')],
+  });
+  assert.deepStrictEqual(referenceBlocks(mk(false)), [false, false, true, true, true, false, false, false, true]);
+  for (const rich of [false, true]) {
+    const doc = mk(rich);
+    for (let seed = 1; seed <= 10; seed++) {
+      const all = [];
+      let carry = initialCarry();
+      const per = [];
+      for (let k = 0; k < itemCount(doc); k++) {
+        const res = planBlock(doc, k, { seed, typoRate: 0.3 }, carry);
+        per.push(res.actions);
+        all.push(...res.actions);
+        carry = res.carry;
+      }
+      const expected = normalizeDoc(doc);
+      delete expected.rich;
+      assert.deepStrictEqual(simulateDoc(all), expected);
+      // Only whitespace at the ends of a run is typed in a reference entry.
+      for (const k of [2, 3, 8]) for (const a of per[k]) if (a.type === 'char') assert.strictEqual(a.ch, ' ');
+      assert.ok(per[2].every((a) => a.type !== 'back'));
+      const pasted = per[2].filter((a) => a.type === 'paste' || a.type === 'para').map((a) => a.text);
+      assert.deepStrictEqual(pasted, ['Smith, J. (2020)', 'A long title of the book', '. London: Sage.']);
+      assert.ok(per[6].filter((a) => a.type === 'char').length > 8); // typed as usual after the list
+    }
+  }
 });

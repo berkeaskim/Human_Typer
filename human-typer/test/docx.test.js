@@ -255,11 +255,11 @@ test('rich formatting: spacing, indents, page breaks, run fonts and sizes, table
   assert.strictEqual(table.rows[1][0].fill, undefined);
 });
 
-test('pictures become image blocks at their place; unsupported, linked and in-table ones are skipped', async () => {
+test('pictures become image blocks at their place, also in table cells; unsupported and linked ones are skipped', async () => {
   const { doc, warnings } = await HT.parseDocx(fixture('images.docx'));
   const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAfbLI3wAAAABJRU5ErkJggg==';
   assert.deepStrictEqual(doc.images, { img1: PNG, img2: 'data:image/jpeg;base64,/9j/2Q==' });
-  const shape = doc.blocks.map((b) => (b.type === 'image' ? b : b.type === 'table' ? 'table' : b.runs.map((r) => r.text).join('')));
+  const shape = doc.blocks.map((b) => (b.type === 'image' ? b : b.type === 'table' ? b.rows[0][0].paragraphs.map((q) => (q.type === 'image' ? q.id : q.runs[0].text)) : b.runs.map((r) => r.text).join('')));
   assert.deepStrictEqual(shape, [
     'Intro',
     { type: 'image', id: 'img1', width: 216, height: 144, align: 'center' },
@@ -269,12 +269,12 @@ test('pictures become image blocks at their place; unsupported, linked and in-ta
     { type: 'image', id: 'img2', width: 100, height: 72, align: 'left' },
     'after emf',
     '', // the linked picture's paragraph stays, empty
-    'table',
+    ['img1', 'cell'], // a picture in a table cell
     'Outro',
   ]);
-  assert.deepStrictEqual(warnings, ['3 images skipped']);
+  assert.deepStrictEqual(warnings, ['2 images skipped']);
   assert.deepStrictEqual(HT.validate(doc), []);
-  assert.strictEqual(HT.stats(doc).images, 3);
+  assert.strictEqual(HT.stats(doc).images, 4);
   assert.deepStrictEqual(HT.normalize(doc), doc);
   // Image blocks without data are dropped; unused data is not kept.
   assert.deepStrictEqual(HT.normalize({ blocks: [{ type: 'image', id: 'nope' }], images: { img1: PNG, bad: 'javascript:1' } }), { blocks: [] });
@@ -282,5 +282,6 @@ test('pictures become image blocks at their place; unsupported, linked and in-ta
   const plain = await HT.parseDocx(fixture('images.docx'), { images: false });
   assert.strictEqual(plain.doc.images, undefined);
   assert.ok(plain.doc.blocks.every((b) => b.type !== 'image'));
+  assert.deepStrictEqual(plain.doc.blocks.find((b) => b.type === 'table').rows[0][0].paragraphs.map((q) => q.type), ['paragraph']);
   assert.deepStrictEqual(plain.warnings, ['6 images skipped']);
 });

@@ -6,7 +6,8 @@
 //   Block     = Paragraph | Table | Image
 //   Image     = { type: 'image', id, width, height (pt; 0 = natural size),
 //                 align, pageBreak?: true }; Doc.images = { id: data URL }
-//                 (body level only; present only when the doc has pictures)
+//                 (in the body and in table cells; Doc.images is present
+//                 only when the doc has pictures)
 //   Paragraph = { type: 'paragraph', style, list, align, runs: Run[] }
 //   Run       = { text, bold?: true, italic?: true, underline?: true, strike?: true,
 //                 font?: string, size?: number (pt) }
@@ -16,7 +17,7 @@
 //   Doc.font? = { family?, size? } body font; Doc.rich?: true when paragraphs
 //               and runs carry their own formatting (.docx input)
 //   Table     = { type: 'table', rows: Cell[][] }   (rectangular)
-//   Cell      = { paragraphs: Paragraph[] }         (at least one)
+//   Cell      = { paragraphs: (Paragraph | Image)[] }  (at least one)
 //   Doc.header, Doc.footer = { paragraphs: Paragraph[] }  (optional; present
 //               only when they contain text)
 //   Doc.pageNumbers = { where: 'header' | 'footer', skipFirst }  (optional)
@@ -114,7 +115,24 @@
     return { type: 'paragraph', style: 'normal', list: null, align: 'left', runs: [] };
   }
 
-  function normalizeTable(t) {
+  const IMAGE_URL = /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+=*$/;
+  function cleanDim(x) {
+    const n = Math.round(Number(x) * 100) / 100;
+    return n > 0 && n <= 5000 ? n : 0;
+  }
+  // `src`: the input's image data; `images` collects the data in use. An
+  // image without (valid) data is dropped (null).
+  function normalizeImage(b, src, images) {
+    if (typeof b.id !== 'string' || !Object.prototype.hasOwnProperty.call(src, b.id) || typeof src[b.id] !== 'string' || !IMAGE_URL.test(src[b.id])) return null;
+    images[b.id] = src[b.id];
+    const width = cleanDim(b.width);
+    const height = cleanDim(b.height);
+    const img = { type: 'image', id: b.id, width: width && height ? width : 0, height: width && height ? height : 0, align: ALIGNS.includes(b.align) ? b.align : 'left' };
+    if (b.pageBreak) img.pageBreak = true;
+    return img;
+  }
+
+  function normalizeTable(t, srcImages, images) {
     const rows = (Array.isArray(t.rows) ? t.rows : [])
       .filter((row) => Array.isArray(row) && row.length > 0)
       .map((row) =>
@@ -123,6 +141,13 @@
           const paragraphs = [];
           for (const p of src) {
             if (p && p.type === 'paragraph') paragraphs.push(...normalizeParagraph(p));
+            else if (p && p.type === 'image') {
+              const img = normalizeImage(p, srcImages || {}, images || {});
+              if (img) {
+                delete img.pageBreak;
+                paragraphs.push(img);
+              }
+            }
           }
           if (paragraphs.length === 0) paragraphs.push(emptyParagraph());
           const out = { paragraphs };
@@ -141,12 +166,6 @@
     return out;
   }
 
-  const IMAGE_URL = /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+=*$/;
-  function cleanDim(x) {
-    const n = Math.round(Number(x) * 100) / 100;
-    return n > 0 && n <= 5000 ? n : 0;
-  }
-
   // Returns a new Doc that satisfies every rule of the model. Never throws.
   function normalize(doc) {
     const blocks = [];
@@ -155,17 +174,11 @@
     for (const b of doc && Array.isArray(doc.blocks) ? doc.blocks : []) {
       if (!b) continue;
       if (b.type === 'image') {
-        // An image without (valid) data is dropped.
-        if (typeof b.id !== 'string' || !Object.prototype.hasOwnProperty.call(src, b.id) || typeof src[b.id] !== 'string' || !IMAGE_URL.test(src[b.id])) continue;
-        images[b.id] = src[b.id];
-        const width = cleanDim(b.width);
-        const height = cleanDim(b.height);
-        const img = { type: 'image', id: b.id, width: width && height ? width : 0, height: width && height ? height : 0, align: ALIGNS.includes(b.align) ? b.align : 'left' };
-        if (b.pageBreak) img.pageBreak = true;
-        blocks.push(img);
+        const img = normalizeImage(b, src, images);
+        if (img) blocks.push(img);
       } else if (b.type === 'paragraph') blocks.push(...normalizeParagraph(b));
       else if (b.type === 'table') {
-        const table = normalizeTable(b);
+        const table = normalizeTable(b, src, images);
         if (table) blocks.push(table);
       }
     }
@@ -229,6 +242,11 @@
     });
   }
 
+  function validateImage(doc, b, path, out) {
+    if (!doc.images || typeof doc.images[b.id] !== 'string') out.push(`${path}.id: no image data for "${b.id}"`);
+    if (!ALIGNS.includes(b.align)) out.push(`${path}.align: invalid align "${b.align}"`);
+  }
+
   // Returns a list of human-readable problems; empty when the doc is valid.
   function validate(doc) {
     const out = [];
@@ -236,11 +254,7 @@
     doc.blocks.forEach((b, i) => {
       const path = `blocks[${i}]`;
       if (b && b.type === 'paragraph') return validateParagraph(b, path, out);
-      if (b && b.type === 'image') {
-        if (!doc.images || typeof doc.images[b.id] !== 'string') out.push(`${path}.id: no image data for "${b.id}"`);
-        if (!ALIGNS.includes(b.align)) out.push(`${path}.align: invalid align "${b.align}"`);
-        return;
-      }
+      if (b && b.type === 'image') return validateImage(doc, b, path, out);
       if (!b || b.type !== 'table') return out.push(`${path}: unknown block type`);
       if (!Array.isArray(b.rows) || b.rows.length === 0) {
         return out.push(`${path}.rows: must be a non-empty array`);
@@ -255,7 +269,7 @@
           if (!cell || !Array.isArray(cell.paragraphs) || cell.paragraphs.length === 0) {
             return out.push(`${cp}.paragraphs: must contain at least one paragraph`);
           }
-          cell.paragraphs.forEach((p, k) => validateParagraph(p, `${cp}.paragraphs[${k}]`, out));
+          cell.paragraphs.forEach((p, k) => (p && p.type === 'image' ? validateImage : (_d, q, pp, o) => validateParagraph(q, pp, o))(doc, p, `${cp}.paragraphs[${k}]`, out));
         });
       });
     });
@@ -264,7 +278,7 @@
 
   // --- plain text ----------------------------------------------------------
   function paragraphText(p) {
-    return p.runs.map((r) => r.text).join('');
+    return (p.runs || []).map((r) => r.text).join(''); // an image in a cell has no text
   }
 
   // Paragraphs joined by '\n'; table cells joined by '\t', rows by '\n'.
@@ -308,7 +322,7 @@
         count(b);
       } else {
         s.tables++;
-        for (const row of b.rows) for (const cell of row) cell.paragraphs.forEach(count);
+        for (const row of b.rows) for (const cell of row) cell.paragraphs.forEach((p) => (p.type === 'image' ? (s.images = (s.images || 0) + 1) : count(p)));
       }
     }
     return s;

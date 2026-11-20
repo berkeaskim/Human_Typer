@@ -463,8 +463,9 @@
             ctx.skipped.textBoxes++;
             break;
           }
-          // A picture in a body paragraph is kept as a marker run at its
-          // place in the text (see splitAtImages); elsewhere it is skipped.
+          // A picture in a body paragraph or table cell is kept as a marker
+          // run at its place in the text (see splitAtImages); in headers,
+          // footers and nested tables it is skipped.
           const image = ctx.images ? imageRef(c) : null;
           if (image) {
             flush();
@@ -495,12 +496,16 @@
     for (const c of container.children) {
       if (c.name === 'w:p') {
         const p = convertParagraph(c, ctx);
-        if (!nested || p.runs.length) out.push(p);
+        if (p.runs.some((r) => r.image)) splitAtImages(p, out);
+        else if (!nested || p.runs.length) out.push(p);
       } else if (c.name === 'w:tbl') {
         if (!nested) ctx.skipped.nestedTables++;
+        const images = ctx.images;
+        ctx.images = false;
         for (const tr of kids(c, 'w:tr')) {
           for (const tc of kids(tr, 'w:tc')) out.push(...cellParagraphs(tc, ctx, true));
         }
+        ctx.images = images;
       } else if (TRANSPARENT.has(c.name)) {
         out.push(...cellParagraphs(c, ctx, nested));
       }
@@ -510,8 +515,6 @@
 
   function convertTable(tbl, ctx) {
     const rows = [];
-    const images = ctx.images; // pictures inside a table are skipped
-    ctx.images = false;
     for (const tr of kids(tbl, 'w:tr')) {
       const row = [];
       const before = parseInt(val(kid(tr, 'w:trPr'), 'w:gridBefore'), 10) || 0;
@@ -531,7 +534,6 @@
       }
       if (row.length) rows.push(row);
     }
-    ctx.images = images;
     const out = { type: 'table', rows };
     // Column widths in points, from the table grid.
     const widths = kids(kid(tbl, 'w:tblGrid'), 'w:gridCol').map((g) => Number(g.attrs['w:w']) / 20);
@@ -681,12 +683,7 @@
     const images = {};
     const ids = new Map();
     let imageChars = 0;
-    const kept = [];
-    for (const b of blocks) {
-      if (b.type !== 'image') {
-        kept.push(b);
-        continue;
-      }
+    const resolve = async (b) => {
       const target = rels.get(b.rid) || '';
       delete b.rid;
       const part = target.startsWith('/') ? target.slice(1) : dir + target;
@@ -701,14 +698,19 @@
           images[id] = 'data:' + mime + ';base64,' + data;
         }
       }
-      if (!id) {
-        ctx.skipped.images++;
-        continue;
+      if (!id) ctx.skipped.images++;
+      else b.id = id;
+      return Boolean(id);
+    };
+    const resolveAll = async (list) => {
+      const kept = [];
+      for (const b of list) {
+        if (b.type === 'table') for (const row of b.rows) for (const cell of row) cell.paragraphs = await resolveAll(cell.paragraphs);
+        if (b.type !== 'image' || (await resolve(b))) kept.push(b);
       }
-      b.id = id;
-      kept.push(b);
-    }
-    blocks = kept;
+      return kept;
+    };
+    blocks = await resolveAll(blocks);
 
     // Header and footer of the last section (the one the body ends in; in
     // practice the whole document). Tables in them are flattened to their

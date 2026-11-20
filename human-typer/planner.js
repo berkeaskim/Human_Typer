@@ -24,7 +24,8 @@
 //   header / footer; key 'Escape' returns it to the body where it was.
 //   { type: 'image',  id, width, height, delay } paste picture `id` (size in pt,
 //                                          0 = natural) into the caret's empty
-//                                          paragraph; the executor adds `src`
+//                                          paragraph; the executor adds `src`;
+//                                          maxWidth (pt) inside a table cell
 //   { type: 'paste',  text, delay, style? } paste `text` in one go (links). With
 //                                          `style` ({ family?, size?, bold, italic,
 //                                          underline, strike }) it is pasted in that
@@ -561,7 +562,7 @@
         rows: b.rows.map((row) =>
           Array.from({ length: cols }, (_, c) => {
             const ps = row[c] && row[c].paragraphs && row[c].paragraphs.length ? row[c].paragraphs : [{}];
-            const cell = { paragraphs: ps.map(normalizeParagraph) };
+            const cell = { paragraphs: ps.map((p) => (p && p.type === 'image' ? normalizeImage(p) : normalizeParagraph(p))) };
             if (row[c] && row[c].fill) cell.fill = row[c].fill;
             return cell;
           })
@@ -612,7 +613,7 @@
     if (block.type === 'image') return [];
     if (block.type !== 'table') return [block];
     const out = [];
-    for (const row of block.rows) for (const cell of row) out.push(...cell.paragraphs);
+    for (const row of block.rows) for (const cell of row) out.push(...cell.paragraphs.filter((p) => p.type !== 'image'));
     return out;
   }
   function docText(doc) {
@@ -621,6 +622,34 @@
       for (const p of blockParagraphs(normalizeBlock(b))) parts.push(p.runs.map((x) => x.text).join(''));
     }
     return parts.join('\n');
+  }
+
+  // --- reference lists -----------------------------------------------------
+  // Nobody types a bibliography out: the entries are copied from a reference
+  // manager and pasted. Body paragraphs under a "References" / "Bibliography"
+  // / "Kaynakça" heading (any heading style, or a short line with just that
+  // word) are pasted whole, up to the next heading.
+  const REF_HEADING = /^\s*(?:(?:\d+|[ivxlc]+)[.)]?\s+)?(?:references?|reference list|list of references|bibliography|works cited|kaynakça|kaynaklar|referanslar)\s*:?\s*$/iu;
+  const refCache = new WeakMap();
+  function referenceBlocks(doc) {
+    if (!doc || !Array.isArray(doc.blocks)) return [];
+    let out = refCache.get(doc);
+    if (out) return out;
+    out = [];
+    let inRefs = false;
+    for (const b of doc.blocks) {
+      let ref = false;
+      if (b && b.type === 'paragraph') {
+        const text = (b.runs || []).map((x) => x.text).join('');
+        const heading = b.style && b.style !== 'normal';
+        if (REF_HEADING.test(text)) inRefs = true;
+        else if (heading) inRefs = false;
+        else ref = inRefs;
+      }
+      out.push(ref);
+    }
+    refCache.set(doc, out);
+    return out;
   }
 
   // --- structured documents ------------------------------------------------
@@ -773,6 +802,9 @@
     // Enter → list/indent → style → align → runs (toggles, then characters).
     // `pauseMs`: thinking time before the paragraph's first action (after Enter).
     const rich = Boolean(doc && doc.rich);
+    // A reference-list entry: its text is pasted, not typed (see typeRun).
+    const whole = index < nBlocks && block.type === 'paragraph' && Boolean(referenceBlocks(doc)[index]);
+    let wholeFirst = true; // the first paste of the entry carries the trip to the source
     function paragraph(p, needEnter, pauseMs, inCell) {
       if (rich) return paragraphRich(p, needEnter, pauseMs, inCell);
       if (needEnter) enter();
@@ -813,6 +845,27 @@
     // typed. `lead`, when given, returns the style to paste the run's first
     // character with (a font or size change, or the body font).
     function typeRun(run, prefixLen, lead) {
+      if (whole) {
+        // Docs drops whitespace at the ends of a paste: that part is typed.
+        const m = /^(\s*)([\s\S]*?)(\s*)$/u.exec(run.text);
+        const edge = (s) => {
+          if (!s) return;
+          const first = out.length;
+          typist.type(Array.from(s));
+          claimPause(out[first]);
+          textChars += Array.from(s).length;
+        };
+        edge(m[1]);
+        if (m[2]) {
+          const a = { type: 'paste', text: m[2], delay: human(wholeFirst ? P.pasteLink : P.fontKey) };
+          wholeFirst = false;
+          if (lead) a.style = lead();
+          push(a);
+          typist.after(m[2]);
+        }
+        edge(m[3]);
+        return;
+      }
       for (const pc of guardPieces(run.text, prefixLen)) {
         if (pc.paste) {
           const a = { type: 'paste', text: pc.text, delay: human(pc.link ? P.pasteLink : P.fontKey) };
@@ -897,7 +950,8 @@
       let text = '';
       // A paragraph that starts with whitespace is pasted empty (Docs would
       // drop the leading whitespace of the paste) and typed from the start.
-      if (runs.length && !/^\s/u.test(runs[0].text)) {
+      if (whole && runs.length && !/^\s/u.test(runs[0].text)) text = runs[0].text.replace(/\s+$/u, '');
+      else if (runs.length && !/^\s/u.test(runs[0].text)) {
         const pc = guardPieces(runs[0].text, autolistPrefix(runs.map((r) => r.text).join('')))[0];
         if (pc.paste) text = pc.text;
         else {
@@ -906,8 +960,9 @@
         }
       }
       typist.reset();
-      const a = { type: 'para', style: p.style, align: p.align, fmt, text, font: styleOf(f0, bits0), delay: human(P.fontKey) };
+      const a = { type: 'para', style: p.style, align: p.align, fmt, text, font: styleOf(f0, bits0), delay: human(whole && text ? P.pasteLink : P.fontKey) };
       if (!text) a.empty = true;
+      else wholeFirst = false;
       push(a);
       Object.assign(c, { style: p.style, align: p.align, list: null, fontKey: fkey(f0) });
       INLINE.forEach((name, i) => {
@@ -940,8 +995,9 @@
     }
 
     // A picture gets a paragraph of its own (plain, with the picture's
-    // alignment) and is pasted into it after a long pause.
-    function image(b, needEnter, pauseMs) {
+    // alignment) and is pasted into it after a long pause. `maxWidth` (pt):
+    // the room it has inside a table cell.
+    function image(b, needEnter, pauseMs, maxWidth) {
       if (needEnter) {
         if (b.pageBreak) {
           if (c.style !== 'normal') c.style = 'normal';
@@ -959,7 +1015,9 @@
         if (c.align !== b.align) format('align:' + b.align);
       }
       Object.assign(c, { style: 'normal', align: b.align, list: null });
-      push({ type: 'image', id: b.id, width: b.width, height: b.height, delay: human(P.imagePaste) });
+      const a = { type: 'image', id: b.id, width: b.width, height: b.height, delay: human(P.imagePaste) };
+      if (maxWidth) a.maxWidth = maxWidth;
+      push(a);
     }
 
     function table(t) {
@@ -985,16 +1043,24 @@
       c.fontSet = false;
       const cellStart = () => Object.assign(c, { style: 'normal', list: null, align: 'left' });
       cellStart();
+      // Column widths as the table is inserted (see tableHtml in transport.js),
+      // in pt, less the cell padding.
+      const total = t.widths ? t.widths.reduce((x, y) => x + y, 0) : 0;
+      const colWidth = (k) => Math.max(20, Math.round((t.widths ? t.widths[k] * Math.min(1, 450 / total) : Math.max(45, Math.floor(450 / cols) * 0.75)) - 12));
       let n = 0;
       for (const row of t.rows) {
-        for (const cell of row) {
+        for (const [col, cell] of row.entries()) {
           if (n++) {
             setInline(0);
             key('Tab', P.cellMove);
             c.fontSet = false;
             cellStart();
           }
-          cell.paragraphs.forEach((p, j) => paragraph(p, j > 0, j > 0 ? think(P.cellParagraphPause) : 0, true));
+          cell.paragraphs.forEach((p, j) => {
+            const pause = j > 0 ? think(P.cellParagraphPause) : 0;
+            if (p.type === 'image') image(Object.assign({}, p, { pageBreak: false }), j > 0, pause, colWidth(col));
+            else paragraph(p, j > 0, pause, true);
+          });
         }
       }
       setInline(0);
@@ -1149,7 +1215,7 @@
         par.implicit = false;
       } else if (a.type === 'image') {
         // The picture is the only thing in its paragraph.
-        if (tbl || inSec) fail('image inside a table or section', i);
+        if (inSec) fail('image inside a header/footer', i);
         if (par.chars.length || par.image) fail('image pasted into a non-empty paragraph', i);
         if (par.list || par.style !== 'normal') fail('image in a list or heading', i);
         if (!a.id) fail('image without an id', i);
@@ -1317,6 +1383,7 @@
     SPEEDS: Object.keys(P.speeds),
     sections,
     itemCount,
+    referenceBlocks,
   };
   root.HumanTyperPlanner = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

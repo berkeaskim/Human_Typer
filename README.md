@@ -85,7 +85,8 @@ Everything is plain JavaScript with no build step and no dependencies.
 ## Limitations
 
 - Google does not document the Docs editor internals this relies on. A Docs update can break typing until `transport.js` is adjusted; the self-test is the quick check.
-- Images in the body of a .docx are pasted in place, each in its own paragraph, after a long pause (as if the writer went to fetch the picture). Images inside tables, headers and footers, linked images and formats Docs cannot show (EMF, WMF, TIFF) are skipped.
+- Images in a .docx (in the body and in table cells) are pasted in place, each in its own paragraph, after a long pause (as if the writer went to fetch the picture). Images in headers, footers and nested tables, linked images and formats Docs cannot show (EMF, WMF, TIFF) are skipped.
+- Reference-list entries (paragraphs under a "References", "Bibliography" or "Kaynakça" heading, up to the next heading) are pasted whole instead of typed.
 - Footnotes, comments and text boxes are skipped, with a warning when the file is loaded.
 - Links are pasted one at a time as plain text rather than typed out.
 - From a .docx, each paragraph keeps its spacing, line height, indents (including hanging), alignment, page breaks and the font, size, bold and italic of every run; tables keep their column widths and cell shading. Fonts missing from your Docs font menu (e.g. Calibri) are added to it first, because Docs drops pasted fonts it does not list. Tested on a real coursework file: 194 of 197 paragraphs came back identical.
